@@ -7,6 +7,7 @@ import (
     "sync"
     "crypto/sha1"
     //"time"
+    "reflect"
     "../../dbgClient"
     "../../protocol/shared"
     debuggerAgent "../../protocol/debugger"
@@ -65,7 +66,7 @@ func (t *Target) FirePaused(callframes []dbgClient.Stackframe) {
                 ScriptId: runtimeAgent.ScriptId(frame.Location.File),
                 LineNumber: int64(frame.Location.Line - 1), // Always -1
             },
-            ScopeChain: []debuggerAgent.Scope{},
+            ScopeChain: t.Proxy.buildScopeChain(),
             This: runtimeAgent.RemoteObject{
                 Type: "undefined",
             },
@@ -87,6 +88,9 @@ type proxy struct {
     activeGoroutineID goroutineID
     breakpointsMux sync.Mutex
     breakpoints map[string]struct{}
+
+    remoteObjects map[uintptr]runtimeAgent.RemoteObject
+    runtime *runtimeAgent.RuntimeAgent
 }
 
 func NewProxy(conn *shared.Connection, client *dbgClient.Client) *proxy {
@@ -98,10 +102,12 @@ func NewProxy(conn *shared.Connection, client *dbgClient.Client) *proxy {
         client: client,
         activeTargets: map[goroutineID]*Target{},
         breakpoints: map[string]struct{}{},
+        remoteObjects: map[uintptr]runtimeAgent.RemoteObject{},
     }
 }
 
 func (p *proxy) Start(runtime *runtimeAgent.RuntimeAgent) {
+    p.runtime = runtime
     // Wait until we are enabled.
     command := <-p.agent.EnableNotify()
     command.Respond()
@@ -139,6 +145,15 @@ func (p *proxy) Start(runtime *runtimeAgent.RuntimeAgent) {
     }
 }
 
+func (p *proxy) GetRemoteObject(key string) (runtimeAgent.RemoteObject, bool) {
+    conv, err := strconv.ParseUint(key, 10, 64)
+    if err != nil {
+        panic(err)
+    }
+    obj, ok := p.remoteObjects[uintptr(conv)]
+    return obj, ok
+}
+
 func (p *proxy) handleNotifications() {
     enable                  := p.agent.EnableNotify()
     disable                 := p.agent.DisableNotify()
@@ -164,6 +179,9 @@ func (p *proxy) handleNotifications() {
     setAsyncCallStackDepth  := p.agent.SetAsyncCallStackDepthNotify()
     setBlackboxPatterns     := p.agent.SetBlackboxPatternsNotify()
     setBlackboxedRanges     := p.agent.SetBlackboxedRangesNotify()
+
+    // TODO this sucks and should be in runtime not here.
+    getProperies := p.runtime.GetPropertiesNotify()
     // TODO bail out properly on closed.
     for {
         select {
@@ -217,6 +235,44 @@ func (p *proxy) handleNotifications() {
             command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
         case command := <-setBlackboxedRanges:
             command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
+
+        case command := <-getProperies:
+            if string(command.ObjectId) == "local" {
+                var goroutineID int
+                var err error
+                if command.DestinationTargetID == "" {
+                    goroutineID = int(p.activeGoroutineID)
+                } else {
+                    goroutineID, err = strconv.Atoi(command.DestinationTargetID)
+                    if err != nil {
+                        panic(err)
+                    }
+                }
+                variables, err := p.client.ListLocalVariables(dbgClient.EvalScope{
+                    GoroutineID: goroutineID,
+                    Frame: 0,
+                }, dbgClient.LoadConfig{
+                    FollowPointers: true,
+                    MaxVariableRecurse: 1,
+                    MaxStringLen: 500,
+                    MaxArrayValues: 1,
+                    MaxStructFields: 1,
+                })
+                if err != nil {
+                    panic(err)
+                }
+                properties := []runtimeAgent.PropertyDescriptor{}
+                for _, variable := range variables {
+                    remoteObject := makeRemoteObject(variable)
+                    properties = append(properties, runtimeAgent.PropertyDescriptor{
+                        Name: variable.Name,
+                        Value: &remoteObject,
+                    })
+                }
+                command.Respond(&runtimeAgent.GetPropertiesReturn{
+                    Result: properties,
+                })
+            }
         }
     }
 }
@@ -452,7 +508,7 @@ func (p *proxy) sendPauseState() {
                     ScriptId: runtimeAgent.ScriptId(frame.Location.File),
                     LineNumber: int64(frame.Location.Line - 1), // Always -1
                 },
-                ScopeChain: []debuggerAgent.Scope{},
+                ScopeChain: p.buildScopeChain(),
                 This: runtimeAgent.RemoteObject{
                     Type: "undefined",
                 },
@@ -467,6 +523,19 @@ func (p *proxy) sendPauseState() {
 
     for target, stacks := range targetsStacks {
         target.FirePaused(stacks)
+    }
+}
+
+func (p *proxy) buildScopeChain() []debuggerAgent.Scope {
+    objectId := runtimeAgent.RemoteObjectId("local")
+    return []debuggerAgent.Scope{
+        debuggerAgent.Scope{
+            Type: debuggerAgent.ScopeTypeLocal,
+            Object: runtimeAgent.RemoteObject{
+                Type: runtimeAgent.RemoteObjectTypeObject,
+                ObjectId: &objectId,
+            },
+        },
     }
 }
 
@@ -519,4 +588,65 @@ func getFileAndRespond(command debuggerAgent.GetScriptSourceCommand) {
     command.Respond(&debuggerAgent.GetScriptSourceReturn{
         ScriptSource: string(data),
     })
+}
+
+func makeRemoteObject(variable dbgClient.Variable) runtimeAgent.RemoteObject {
+    //name := variable.Name
+    kind := variable.Kind
+    outKind := runtimeAgent.RemoteObjectTypeSymbol
+    var subType runtimeAgent.RemoteObjectSubtypeEnum
+    var subTypePtr *runtimeAgent.RemoteObjectSubtypeEnum
+
+    previewType := runtimeAgent.ObjectPreviewTypeSymbol
+    var previewSubType runtimeAgent.ObjectPreviewSubtypeEnum
+    var previewSubTypePtr *runtimeAgent.ObjectPreviewSubtypeEnum
+    if kind == reflect.Bool {
+        outKind = runtimeAgent.RemoteObjectTypeBoolean
+    } else if kind == reflect.Int || kind == reflect.Int8 || kind == reflect.Int16 || kind == reflect.Int32 ||
+              kind == reflect.Int64 || kind == reflect.Uint || kind == reflect.Uint8 || kind == reflect.Uint16 ||
+              kind == reflect.Uint32 || kind == reflect.Uint64 || kind == reflect.Uintptr || kind == reflect.Float32 ||
+              kind == reflect.Float64 {
+        outKind = runtimeAgent.RemoteObjectTypeNumber
+    } else if kind == reflect.Complex64 || kind == reflect.Complex128 {
+    } else if kind == reflect.Array {
+        outKind = runtimeAgent.RemoteObjectTypeObject
+        subType = runtimeAgent.RemoteObjectSubtypeArray
+        subTypePtr = &subType
+
+        previewType = runtimeAgent.ObjectPreviewTypeObject
+        previewSubType = runtimeAgent.ObjectPreviewSubtypeArray
+        previewSubTypePtr = &previewSubType
+    } else if kind == reflect.Chan {
+    } else if kind == reflect.Func {
+        outKind = runtimeAgent.RemoteObjectTypeFunction
+    } else if kind == reflect.Interface {
+    } else if kind == reflect.Map {
+        outKind = runtimeAgent.RemoteObjectTypeObject
+        subType = runtimeAgent.RemoteObjectSubtypeMap
+        subTypePtr = &subType
+    } else if kind == reflect.Ptr {
+    } else if kind == reflect.Slice {
+        outKind = runtimeAgent.RemoteObjectTypeObject
+        subType = runtimeAgent.RemoteObjectSubtypeArray
+        subTypePtr = &subType
+    } else if kind == reflect.String {
+        outKind = runtimeAgent.RemoteObjectTypeString
+        previewType = runtimeAgent.ObjectPreviewTypeString
+    } else if kind == reflect.Struct {
+        outKind = runtimeAgent.RemoteObjectTypeObject
+    } else if kind == reflect.UnsafePointer {
+    }
+
+    return runtimeAgent.RemoteObject{
+        Type: outKind,
+        Subtype: subTypePtr,
+        Value: variable.Value,
+        Preview: &runtimeAgent.ObjectPreview{
+            Type: previewType,
+            Subtype: previewSubTypePtr,
+            Overflow: false,
+            Properties: []runtimeAgent.PropertyPreview{},
+            // Entries: &[]runtimeAgent.EntryPreview{},
+        },
+    }
 }

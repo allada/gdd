@@ -1,7 +1,10 @@
 package main
 import "fmt"
 func main() {
-    fmt.Println("hello world")
+    helloWorldVar := "hello world"
+    fmt.Println(helloWorldVar)
+    helloWorldVar = "goodnight world"
+    fmt.Println(helloWorldVar)
     PrintStuffOut()
     fmt.Println("hello world")
 }

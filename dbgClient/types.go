@@ -51,3 +51,9 @@ type Thread api.Thread
 func (a Thread) conv() api.Thread {
     return api.Thread(a)
 }
+
+type Variable api.Variable
+
+func (a Variable) conv() api.Variable {
+    return api.Variable(a)
+}

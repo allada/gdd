@@ -54,3 +54,8 @@ func (c *Client) SwitchThread(threadID int) (*DebuggerState, error) {
     debuggerState, err := c.rpcClient.SwitchThread(threadID)
     return (*DebuggerState)(debuggerState), err
 }
+
+func (c *Client) ListLocalVariables(scope EvalScope, cfg LoadConfig) ([]Variable, error) {
+    variables, err := c.rpcClient.ListLocalVariables(api.EvalScope(scope), api.LoadConfig(cfg))
+    return *(*[]Variable)(unsafe.Pointer(&variables)), err
+}
