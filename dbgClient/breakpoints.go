@@ -12,10 +12,11 @@ func (c *Client) CreateBreakpointAtPC(pc uint64) {
     })
 }
 
-func (c *Client) CreateBreakpointAtLine(file string, line int) (*Breakpoint, error) {
+func (c *Client) CreateBreakpointAtLine(file string, line int, name string) (*Breakpoint, error) {
     breakpoint, err := c.rpcClient.CreateBreakpoint(&api.Breakpoint{
         File: file,
         Line: line,
+        Name: name,
     })
     return (*Breakpoint)(breakpoint), err
 }
@@ -41,5 +42,10 @@ func (c *Client) ClearAllBreakpoints() {
 
 func (c *Client) ClearBreakpoint(id int) error {
     _, err := c.rpcClient.ClearBreakpoint(id)
+    return err
+}
+
+func (c *Client) ClearBreakpointByName(name string) error {
+    _, err := c.rpcClient.ClearBreakpointByName(name)
     return err
 }

@@ -4,6 +4,9 @@ import (
     "fmt"
     "io/ioutil"
     "strconv"
+    "sync"
+    "crypto/sha1"
+    //"time"
     "../../dbgClient"
     "../../protocol/shared"
     debuggerAgent "../../protocol/debugger"
@@ -44,6 +47,10 @@ func (t *Target) Destroy() {
     })
 }
 
+func (t *Target) FireResumed() {
+    t.Proxy.agent.FireResumedOnTarget(fmt.Sprintf("%d", t.ID))
+}
+
 func (t *Target) FirePaused(callframes []dbgClient.Stackframe) {
     sendFrames := []debuggerAgent.CallFrame{}
     for index, frame := range callframes {
@@ -78,6 +85,8 @@ type proxy struct {
     activeTargets map[goroutineID]*Target
     fileList []string
     activeGoroutineID goroutineID
+    breakpointsMux sync.Mutex
+    breakpoints map[string]struct{}
 }
 
 func NewProxy(conn *shared.Connection, client *dbgClient.Client) *proxy {
@@ -88,15 +97,24 @@ func NewProxy(conn *shared.Connection, client *dbgClient.Client) *proxy {
         target: target,
         client: client,
         activeTargets: map[goroutineID]*Target{},
+        breakpoints: map[string]struct{}{},
     }
 }
 
-func (p *proxy) Start() {
+func (p *proxy) Start(runtime *runtimeAgent.RuntimeAgent) {
     // Wait until we are enabled.
     command := <-p.agent.EnableNotify()
     command.Respond()
 
     go p.handleNotifications()
+
+    runtime.FireExecutionContextCreated(runtimeAgent.ExecutionContextCreatedEvent{
+        Context: runtimeAgent.ExecutionContextDescription{
+            Id: 1,
+            Origin: "://",
+            Name: "Self",
+        },
+    })
 
     // Wait until debugger is ready.
     p.client.BlockUntilReady()
@@ -177,7 +195,7 @@ func (p *proxy) handleNotifications() {
         case command := <-pause:
             command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
         case command := <-resume:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
+            go p.continueAndRespond(command)
         case command := <-searchInContent:
             command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
         case command := <-setScriptSource:
@@ -210,7 +228,7 @@ func buildLocation(file string, line int) debuggerAgent.Location {
     }
 }
 
-func (p *proxy) continueAndRespond(command debuggerAgent.StepOverCommand) {
+func (p *proxy) continueAndRespond(command debuggerAgent.ResumeCommand) {
     if command.DestinationTargetID != "" {
         if targetID, err := strconv.Atoi(command.DestinationTargetID); err == nil {
             p.activeGoroutineID = goroutineID(targetID)
@@ -226,7 +244,9 @@ func (p *proxy) continueAndRespond(command debuggerAgent.StepOverCommand) {
         panic(err)
     }
 
+    p.sendResumeState()
     _, ok := <-p.client.Continue()
+
     if !ok {
         command.RespondWithError(shared.ErrorCodeInternalError, "It appears program has exited");
         return
@@ -251,7 +271,9 @@ func (p *proxy) stepOverAndRespond(command debuggerAgent.StepOverCommand) {
         panic(err)
     }
 
+    p.sendResumeState()
     _, err = p.client.Next()
+
     if err != nil {
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
         panic(err)
@@ -276,6 +298,8 @@ func (p *proxy) stepIntoAndRespond(command debuggerAgent.StepIntoCommand) {
         panic(err)
         return
     }
+
+    p.sendResumeState()
     _, err = p.client.Step()
     if err != nil {
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
@@ -302,6 +326,8 @@ func (p *proxy) stepOutAndRespond(command debuggerAgent.StepOutCommand) {
         panic(err)
         return
     }
+
+    p.sendResumeState()
     _, err = p.client.StepOut()
     if err != nil {
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
@@ -329,40 +355,54 @@ func (p *proxy) setBreakpointAndRespond(command debuggerAgent.SetBreakpointByUrl
         command.RespondWithError(shared.ErrorCodeInvalidParams, "url must be set")
         return
     }
-    if command.DestinationTargetID != "" {
-        command.Respond(&debuggerAgent.SetBreakpointByUrlReturn{
-            // TODO FIX THIS!
-            BreakpointId: debuggerAgent.BreakpointId(fmt.Sprintf("%d", command.LineNumber)),
-            Locations: []debuggerAgent.Location{
-                buildLocation(*command.Url, int(*command.ColumnNumber)),
-            },
-        })
+
+    // Start with "a" because cannot start just be a number.
+    breakpointKey := fmt.Sprintf("a%x", sha1.Sum([]byte(fmt.Sprintf("%s:%d", *command.Url, command.LineNumber))))
+    p.breakpointsMux.Lock()
+    defer p.breakpointsMux.Unlock()
+    if _, ok := p.breakpoints[breakpointKey]; ok {
+        // Breakpoint already set.
+        p.sendBreakpointSet(command, debuggerAgent.BreakpointId(breakpointKey))
         return
     }
-    breakpoint, err := p.client.CreateBreakpointAtLine(*command.Url, int(command.LineNumber))
+    // Always +1 from what devtools says.
+    _, err := p.client.CreateBreakpointAtLine(*command.Url, int(command.LineNumber + 1), breakpointKey)
     if err != nil {
+        delete(p.breakpoints, breakpointKey)
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
         return
     }
+    p.breakpoints[breakpointKey] = struct{}{}
+    p.sendBreakpointSet(command, debuggerAgent.BreakpointId(breakpointKey))
+}
+
+func (p *proxy) sendBreakpointSet(command debuggerAgent.SetBreakpointByUrlCommand, breakpointId debuggerAgent.BreakpointId) {
     command.Respond(&debuggerAgent.SetBreakpointByUrlReturn{
-        BreakpointId: debuggerAgent.BreakpointId(fmt.Sprintf("%d", breakpoint.ID)),
+        //BreakpointId: debuggerAgent.BreakpointId(fmt.Sprintf("%d", breakpoint.ID)),
+        BreakpointId: breakpointId,
         Locations: []debuggerAgent.Location{
-            buildLocation(breakpoint.File, breakpoint.Line),
+            buildLocation(*command.Url, int(command.LineNumber)),
         },
     })
 }
 
 func (p *proxy) removeBreakpointAndRespond(command debuggerAgent.RemoveBreakpointCommand) {
-    id, err := strconv.Atoi(string(command.BreakpointId))
-    if err != nil {
-        command.RespondWithError(shared.ErrorCodeInternalError, "Failed to convert BreakpointId to int")
-        return
-    }
-    if err := p.client.ClearBreakpoint(id); err != nil {
+    breakpointId := string(command.BreakpointId)
+    p.breakpointsMux.Lock()
+    delete(p.breakpoints, breakpointId)
+    p.breakpointsMux.Unlock()
+    if err := p.client.ClearBreakpointByName(breakpointId); err != nil {
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
         return
     }
     command.Respond()
+}
+
+func (p *proxy) sendResumeState() {
+    for _, target := range p.activeTargets {
+        target.FireResumed()
+    }
+    p.agent.FireResumed()
 }
 
 func (p *proxy) sendPauseState() {
@@ -373,11 +413,11 @@ func (p *proxy) sendPauseState() {
     p.syncGoroutines()
     // TODO Need some checks here on state.
     if state == nil {
-        fmt.Println("Called sendPauseState() but not paused.")
-        return
+        panic("Called sendPauseState() but not paused.")
     }
 
     var activeStack *[]dbgClient.Stackframe
+    targetsStacks := map[*Target][]dbgClient.Stackframe{}
     for routineID, target := range p.activeTargets {
         stacks, err := p.client.Stacktrace(int(routineID), 50, &dbgClient.LoadConfig{
             FollowPointers: true,
@@ -394,34 +434,39 @@ func (p *proxy) sendPauseState() {
             activeStack = &stacks
             continue
         }
-        target.FirePaused(stacks)
+        targetsStacks[target] = stacks
     }
+
     if activeStack != nil {
-            // TODO move this code.
-            sendFrames := []debuggerAgent.CallFrame{}
-            for index, frame := range *activeStack {
-                functionName := "<Unknown>"
-                if frame.Location.Function != nil {
-                    functionName = frame.Location.Function.Name
-                }
-                sendFrames = append(sendFrames, debuggerAgent.CallFrame{
-                    CallFrameId: debuggerAgent.CallFrameId(fmt.Sprintf("%d", index)),
-                    FunctionName: functionName,
-                    Location: debuggerAgent.Location{
-                        ScriptId: runtimeAgent.ScriptId(frame.Location.File),
-                        LineNumber: int64(frame.Location.Line - 1), // Always -1
-                    },
-                    ScopeChain: []debuggerAgent.Scope{},
-                    This: runtimeAgent.RemoteObject{
-                        Type: "undefined",
-                    },
-                    ReturnValue: nil,
-                })
+        // TODO move this code.
+        sendFrames := []debuggerAgent.CallFrame{}
+        for index, frame := range *activeStack {
+            functionName := "<Unknown>"
+            if frame.Location.Function != nil {
+                functionName = frame.Location.Function.Name
             }
-            p.agent.FirePaused(debuggerAgent.PausedEvent{
-                Reason: "other",
-                CallFrames: sendFrames,
+            sendFrames = append(sendFrames, debuggerAgent.CallFrame{
+                CallFrameId: debuggerAgent.CallFrameId(fmt.Sprintf("%d", index)),
+                FunctionName: functionName,
+                Location: debuggerAgent.Location{
+                    ScriptId: runtimeAgent.ScriptId(frame.Location.File),
+                    LineNumber: int64(frame.Location.Line - 1), // Always -1
+                },
+                ScopeChain: []debuggerAgent.Scope{},
+                This: runtimeAgent.RemoteObject{
+                    Type: "undefined",
+                },
+                ReturnValue: nil,
             })
+        }
+        p.agent.FirePaused(debuggerAgent.PausedEvent{
+            Reason: "other",
+            CallFrames: sendFrames,
+        })
+    }
+
+    for target, stacks := range targetsStacks {
+        target.FirePaused(stacks)
     }
 }
 

@@ -2,7 +2,6 @@ package dbgClient
 
 import (
     "io"
-    "os"
     "os/exec"
     "fmt"
     "../config"
@@ -18,28 +17,36 @@ type Client struct{
     isReady bool
     isReadyLock sync.Mutex
     rpcClient *rpc2.RPCClient
+    cmd *exec.Cmd
+    stdout io.ReadCloser
+    stderr io.ReadCloser
 }
 
 func (c *Client) Start() {
     c.isReadyLock.Lock()
     defer c.isReadyLock.Unlock()
-    cmd := exec.Command(config.DVL_PATH, "debug", "--headless", "--build-flags=-gcflags='-N -l'", "--api-version=2", "--listen=localhost:0", c.File)
-    stdout, err := cmd.StdoutPipe()
+    c.cmd = exec.Command(config.DVL_PATH, "debug", "--headless", "--build-flags=-gcflags='-N -l'", "--api-version=2", "--listen=localhost:0", c.File)
+
+    var err error
+    c.stdout, err = c.cmd.StdoutPipe()
     if err != nil {
         panic(err)
     }
 
-    if err := cmd.Start(); err != nil {
+    c.stderr, err = c.cmd.StderrPipe()
+    if err != nil {
+        panic(err)
+    }
+
+    if err := c.cmd.Start(); err != nil {
         panic(err)
     }
 
     var port int
-    fmt.Fscanf(stdout, API_PORT_LISTENING_STRING, &port)
+    fmt.Fscanf(c.stdout, API_PORT_LISTENING_STRING, &port)
     if port == 0 {
         panic("Did not get good output from dvl or 0 for port number.")
     }
-
-    go io.Copy(os.Stdout, stdout)
 
     c.rpcClient = rpc2.NewClient("localhost:" + fmt.Sprintf("%d", port))
     c.setupBreakOnStart()
@@ -53,6 +60,24 @@ func (c *Client) Start() {
         c.ClearBreakpoint((*breakpoint).ID)
     }
     c.isReady = true
+}
+
+func (c *Client) GetStdout() (io.ReadCloser, error) {
+    c.BlockUntilReady()
+    // This is done so it errors properly.
+    defer func() {
+        c.stdout = nil
+    }()
+    return c.stdout, nil
+}
+
+func (c *Client) GetStderr() (io.ReadCloser, error) {
+    c.BlockUntilReady()
+    // This is done so it errors properly.
+    defer func() {
+        c.stderr = nil
+    }()
+    return c.stderr, nil
 }
 
 func (c *Client) setupBreakOnStart() {
