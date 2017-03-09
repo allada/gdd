@@ -5,9 +5,8 @@ import (
     "io/ioutil"
     "strconv"
     "sync"
+    "strings"
     "crypto/sha1"
-    //"time"
-    "reflect"
     "../../dbgClient"
     "../../protocol/shared"
     debuggerAgent "../../protocol/debugger"
@@ -22,13 +21,18 @@ type Target struct {
     Proxy *proxy
 }
 
-func (t *Target) Attach() {
+func (t *Target) Attach(routine dbgClient.Goroutine) {
+    var name string
+    if routine.UserCurrentLoc.Function != nil {
+        parts := strings.Split(routine.UserCurrentLoc.Function.Name, ".")
+        name = " " + parts[len(parts) - 1]
+    }
     t.Proxy.target.FireAttachedToTarget(targetAgent.AttachedToTargetEvent{
         TargetInfo: targetAgent.TargetInfo{
             TargetId: targetAgent.TargetID(fmt.Sprintf("%d", t.ID)),
-            Type: "worker",
-            Title: "asdf",
-            Url: "asdf",
+            Type: "node",
+            Title: "tt",
+            Url: fmt.Sprintf("%d:%s", t.ID, name),
         },
         WaitingForDebugger: false,
     })
@@ -66,7 +70,7 @@ func (t *Target) FirePaused(callframes []dbgClient.Stackframe) {
                 ScriptId: runtimeAgent.ScriptId(frame.Location.File),
                 LineNumber: int64(frame.Location.Line - 1), // Always -1
             },
-            ScopeChain: t.Proxy.buildScopeChain(),
+            ScopeChain: t.Proxy.buildScopeChain(index),
             This: runtimeAgent.RemoteObject{
                 Type: "undefined",
             },
@@ -79,18 +83,23 @@ func (t *Target) FirePaused(callframes []dbgClient.Stackframe) {
     })
 }
 
+type runtimer interface{
+    CreateContext()
+    MakeRemoteObject(dbgClient.Variable) runtimeAgent.RemoteObject
+}
+
 type proxy struct {
     agent *debuggerAgent.DebuggerAgent
     target *targetAgent.TargetAgent
     client *dbgClient.Client
+    runtime runtimer
+
+    activeTargetsMux sync.RWMutex
     activeTargets map[goroutineID]*Target
     fileList []string
     activeGoroutineID goroutineID
     breakpointsMux sync.Mutex
     breakpoints map[string]struct{}
-
-    remoteObjects map[uintptr]runtimeAgent.RemoteObject
-    runtime *runtimeAgent.RuntimeAgent
 }
 
 func NewProxy(conn *shared.Connection, client *dbgClient.Client) *proxy {
@@ -102,28 +111,29 @@ func NewProxy(conn *shared.Connection, client *dbgClient.Client) *proxy {
         client: client,
         activeTargets: map[goroutineID]*Target{},
         breakpoints: map[string]struct{}{},
-        remoteObjects: map[uintptr]runtimeAgent.RemoteObject{},
     }
 }
 
-func (p *proxy) Start(runtime *runtimeAgent.RuntimeAgent) {
+func (p *proxy) Start(runtime runtimer) {
     p.runtime = runtime
     // Wait until we are enabled.
     command := <-p.agent.EnableNotify()
     command.Respond()
 
     go p.handleNotifications()
-
-    runtime.FireExecutionContextCreated(runtimeAgent.ExecutionContextCreatedEvent{
-        Context: runtimeAgent.ExecutionContextDescription{
-            Id: 1,
-            Origin: "://",
-            Name: "Self",
-        },
-    })
+    go p.runtime.CreateContext()
 
     // Wait until debugger is ready.
     p.client.BlockUntilReady()
+
+    state, err := p.client.GetState()
+    if err != nil {
+        panic(err)
+    }
+
+    if state.SelectedGoroutine != nil {
+        p.activeGoroutineID = goroutineID(state.SelectedGoroutine.ID)
+    }
 
     go p.sendPauseState()
 
@@ -143,15 +153,6 @@ func (p *proxy) Start(runtime *runtimeAgent.RuntimeAgent) {
             ExecutionContextId: 1,
         })
     }
-}
-
-func (p *proxy) GetRemoteObject(key string) (runtimeAgent.RemoteObject, bool) {
-    conv, err := strconv.ParseUint(key, 10, 64)
-    if err != nil {
-        panic(err)
-    }
-    obj, ok := p.remoteObjects[uintptr(conv)]
-    return obj, ok
 }
 
 func (p *proxy) handleNotifications() {
@@ -180,14 +181,11 @@ func (p *proxy) handleNotifications() {
     setBlackboxPatterns     := p.agent.SetBlackboxPatternsNotify()
     setBlackboxedRanges     := p.agent.SetBlackboxedRangesNotify()
 
-    // TODO this sucks and should be in runtime not here.
-    getProperies := p.runtime.GetPropertiesNotify()
     // TODO bail out properly on closed.
     for {
         select {
         case command := <-enable:
             command.Respond()
-            //command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
         case command := <-disable:
             command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
         case command := <-setBreakpointsActive:
@@ -226,7 +224,7 @@ func (p *proxy) handleNotifications() {
         case command := <-setPauseOnExceptions:
             command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
         case command := <-evaluateOnCallFrame:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
+            go p.evaluateOnGoroutineAndRespond(command)
         case command := <-setVariableValue:
             command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
         case command := <-setAsyncCallStackDepth:
@@ -235,44 +233,6 @@ func (p *proxy) handleNotifications() {
             command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
         case command := <-setBlackboxedRanges:
             command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-
-        case command := <-getProperies:
-            if string(command.ObjectId) == "local" {
-                var goroutineID int
-                var err error
-                if command.DestinationTargetID == "" {
-                    goroutineID = int(p.activeGoroutineID)
-                } else {
-                    goroutineID, err = strconv.Atoi(command.DestinationTargetID)
-                    if err != nil {
-                        panic(err)
-                    }
-                }
-                variables, err := p.client.ListLocalVariables(dbgClient.EvalScope{
-                    GoroutineID: goroutineID,
-                    Frame: 0,
-                }, dbgClient.LoadConfig{
-                    FollowPointers: true,
-                    MaxVariableRecurse: 1,
-                    MaxStringLen: 500,
-                    MaxArrayValues: 1,
-                    MaxStructFields: 1,
-                })
-                if err != nil {
-                    panic(err)
-                }
-                properties := []runtimeAgent.PropertyDescriptor{}
-                for _, variable := range variables {
-                    remoteObject := makeRemoteObject(variable)
-                    properties = append(properties, runtimeAgent.PropertyDescriptor{
-                        Name: variable.Name,
-                        Value: &remoteObject,
-                    })
-                }
-                command.Respond(&runtimeAgent.GetPropertiesReturn{
-                    Result: properties,
-                })
-            }
         }
     }
 }
@@ -282,33 +242,6 @@ func buildLocation(file string, line int) debuggerAgent.Location {
         ScriptId: runtimeAgent.ScriptId(file),
         LineNumber: int64(line),
     }
-}
-
-func (p *proxy) continueAndRespond(command debuggerAgent.ResumeCommand) {
-    if command.DestinationTargetID != "" {
-        if targetID, err := strconv.Atoi(command.DestinationTargetID); err == nil {
-            p.activeGoroutineID = goroutineID(targetID)
-        } else {
-            command.RespondWithError(shared.ErrorCodeInternalError, "Could not convert targetID to int")
-            panic(err)
-        }
-    }
-    
-    _, err := p.client.SwitchGoroutine(int(p.activeGoroutineID))
-    if err != nil {
-        command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
-        panic(err)
-    }
-
-    p.sendResumeState()
-    _, ok := <-p.client.Continue()
-
-    if !ok {
-        command.RespondWithError(shared.ErrorCodeInternalError, "It appears program has exited");
-        return
-    }
-    command.Respond()
-    p.sendPauseState()
 }
 
 func (p *proxy) stepOverAndRespond(command debuggerAgent.StepOverCommand) {
@@ -394,6 +327,164 @@ func (p *proxy) stepOutAndRespond(command debuggerAgent.StepOutCommand) {
     p.sendPauseState()
 }
 
+func (p *proxy) continueAndRespond(command debuggerAgent.ResumeCommand) {
+    if command.DestinationTargetID != "" {
+        if targetID, err := strconv.Atoi(command.DestinationTargetID); err == nil {
+            p.activeGoroutineID = goroutineID(targetID)
+        } else {
+            command.RespondWithError(shared.ErrorCodeInternalError, "Could not convert targetID to int")
+            panic(err)
+        }
+    }
+    
+    _, err := p.client.SwitchGoroutine(int(p.activeGoroutineID))
+    if err != nil {
+        command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
+        panic(err)
+    }
+    command.Respond()
+
+    p.sendResumeState()
+    state, ok := <-p.client.Continue()
+
+    if !ok {
+        panic("It appears program has exited");
+        return
+    }
+    if state != nil && state.SelectedGoroutine != nil {
+        p.activeGoroutineID = goroutineID(state.SelectedGoroutine.ID)
+    }
+    p.sendPauseState()
+}
+
+
+func (p *proxy) sendResumeState() {
+    p.activeTargetsMux.RLock()
+    defer p.activeTargetsMux.RUnlock()
+    for _, target := range p.activeTargets {
+        target.FireResumed()
+    }
+    p.agent.FireResumed()
+}
+
+func (p *proxy) sendPauseState() {
+    state, err := p.client.GetState()
+    if err != nil {
+        panic(err)
+    }
+    p.syncGoroutines()
+    // TODO Need some checks here on state.
+    if state == nil {
+        panic("Called sendPauseState() but not paused.")
+    }
+
+    p.activeTargetsMux.RLock()
+
+    var activeStack *[]dbgClient.Stackframe
+    targetsStacks := map[*Target][]dbgClient.Stackframe{}
+    for routineID, target := range p.activeTargets {
+        stacks, err := p.client.Stacktrace(int(routineID), 50, &dbgClient.LoadConfig{
+            FollowPointers: true,
+            MaxVariableRecurse: 1,
+            MaxStringLen: 1,
+            MaxArrayValues: 1,
+            MaxStructFields: 1,
+        })
+        if err != nil {
+            // TODO Something better here.
+            panic(err)
+        }
+        if routineID == p.activeGoroutineID {
+            activeStack = &stacks
+            continue
+        }
+        targetsStacks[target] = stacks
+    }
+
+    p.activeTargetsMux.RUnlock()
+
+    if activeStack != nil {
+        // TODO move this code.
+        sendFrames := []debuggerAgent.CallFrame{}
+        for index, frame := range *activeStack {
+            functionName := "<Unknown>"
+            if frame.Location.Function != nil {
+                functionName = frame.Location.Function.Name
+            }
+            sendFrames = append(sendFrames, debuggerAgent.CallFrame{
+                CallFrameId: debuggerAgent.CallFrameId(fmt.Sprintf("%d", index)),
+                FunctionName: functionName,
+                Location: debuggerAgent.Location{
+                    ScriptId: runtimeAgent.ScriptId(frame.Location.File),
+                    LineNumber: int64(frame.Location.Line - 1), // Always -1
+                },
+                ScopeChain: p.buildScopeChain(index),
+                This: runtimeAgent.RemoteObject{
+                    Type: "undefined",
+                },
+                ReturnValue: nil,
+            })
+        }
+        p.agent.FirePaused(debuggerAgent.PausedEvent{
+            Reason: "other",
+            CallFrames: sendFrames,
+        })
+    }
+
+    for target, stacks := range targetsStacks {
+        target.FirePaused(stacks)
+    }
+}
+
+func (p *proxy) buildScopeChain(frameId int) []debuggerAgent.Scope {
+    objectId := runtimeAgent.RemoteObjectId(fmt.Sprintf("local:%d", frameId))
+    return []debuggerAgent.Scope{
+        debuggerAgent.Scope{
+            Type: debuggerAgent.ScopeTypeLocal,
+            Object: runtimeAgent.RemoteObject{
+                Type: runtimeAgent.RemoteObjectTypeObject,
+                ObjectId: &objectId,
+            },
+        },
+    }
+}
+
+func (p *proxy) syncGoroutines() {
+    p.activeTargetsMux.Lock()
+    defer p.activeTargetsMux.Unlock()
+    routines, err := p.client.ListGoroutines()
+    if err != nil {
+        panic(err)
+    }
+    foundTargets := map[goroutineID]struct{}{}
+    for _, routine := range routines {
+        id := goroutineID(routine.ID)
+        foundTargets[id] = struct{}{}
+        _, ok := p.activeTargets[id]
+        if !ok {
+            target := &Target{
+                ID: id,
+                Proxy: p,
+            }
+            target.Attach(*routine)
+            p.activeTargets[id] = target
+        }
+    }
+    for routineID, target := range p.activeTargets {
+        if _, ok := foundTargets[routineID]; !ok {
+            target.Destroy()
+            delete(p.activeTargets, routineID)
+        }
+    }
+    if _, ok := p.activeTargets[p.activeGoroutineID]; !ok {
+        // Grab first item in activeTargets since one was not found.
+        for index, _ := range p.activeTargets {
+            p.activeGoroutineID = index
+            break;
+        }
+    }
+}
+
 func (p *proxy) setBreakpointAndRespond(command debuggerAgent.SetBreakpointByUrlCommand) {
     if command.UrlRegex != nil {
         command.RespondWithError(shared.ErrorCodeInvalidParams, "urlRegex not available")
@@ -454,128 +545,45 @@ func (p *proxy) removeBreakpointAndRespond(command debuggerAgent.RemoveBreakpoin
     command.Respond()
 }
 
-func (p *proxy) sendResumeState() {
-    for _, target := range p.activeTargets {
-        target.FireResumed()
-    }
-    p.agent.FireResumed()
-}
-
-func (p *proxy) sendPauseState() {
-    state, err := p.client.GetState()
-    if err != nil {
-        panic(err)
-    }
-    p.syncGoroutines()
-    // TODO Need some checks here on state.
-    if state == nil {
-        panic("Called sendPauseState() but not paused.")
-    }
-
-    var activeStack *[]dbgClient.Stackframe
-    targetsStacks := map[*Target][]dbgClient.Stackframe{}
-    for routineID, target := range p.activeTargets {
-        stacks, err := p.client.Stacktrace(int(routineID), 50, &dbgClient.LoadConfig{
-            FollowPointers: true,
-            MaxVariableRecurse: 1,
-            MaxStringLen: 1,
-            MaxArrayValues: 1,
-            MaxStructFields: 1,
-        })
-        if err != nil {
-            // TODO Something better here.
+func (p *proxy) evaluateOnGoroutineAndRespond(command debuggerAgent.EvaluateOnCallFrameCommand) {
+    goroutineID := int(p.activeGoroutineID)
+    if command.DestinationTargetID != "" {
+        if targetID, err := strconv.Atoi(command.DestinationTargetID); err == nil {
+            goroutineID = targetID
+        } else {
+            command.RespondWithError(shared.ErrorCodeInternalError, "Could not convert targetID to int")
             panic(err)
         }
-        if routineID == p.activeGoroutineID {
-            activeStack = &stacks
-            continue
-        }
-        targetsStacks[target] = stacks
     }
-
-    if activeStack != nil {
-        // TODO move this code.
-        sendFrames := []debuggerAgent.CallFrame{}
-        for index, frame := range *activeStack {
-            functionName := "<Unknown>"
-            if frame.Location.Function != nil {
-                functionName = frame.Location.Function.Name
-            }
-            sendFrames = append(sendFrames, debuggerAgent.CallFrame{
-                CallFrameId: debuggerAgent.CallFrameId(fmt.Sprintf("%d", index)),
-                FunctionName: functionName,
-                Location: debuggerAgent.Location{
-                    ScriptId: runtimeAgent.ScriptId(frame.Location.File),
-                    LineNumber: int64(frame.Location.Line - 1), // Always -1
-                },
-                ScopeChain: p.buildScopeChain(),
-                This: runtimeAgent.RemoteObject{
-                    Type: "undefined",
-                },
-                ReturnValue: nil,
-            })
-        }
-        p.agent.FirePaused(debuggerAgent.PausedEvent{
-            Reason: "other",
-            CallFrames: sendFrames,
-        })
-    }
-
-    for target, stacks := range targetsStacks {
-        target.FirePaused(stacks)
-    }
-}
-
-func (p *proxy) buildScopeChain() []debuggerAgent.Scope {
-    objectId := runtimeAgent.RemoteObjectId("local")
-    return []debuggerAgent.Scope{
-        debuggerAgent.Scope{
-            Type: debuggerAgent.ScopeTypeLocal,
-            Object: runtimeAgent.RemoteObject{
-                Type: runtimeAgent.RemoteObjectTypeObject,
-                ObjectId: &objectId,
-            },
-        },
-    }
-}
-
-func (p *proxy) syncGoroutines() {
-    // TODO Need mutex for activeTargets.
-    routines, err := p.client.ListGoroutines()
+    frameId, err := strconv.Atoi(string(command.CallFrameId));
     if err != nil {
         panic(err)
     }
-    foundTargets := map[goroutineID]struct{}{}
-    for _, routine := range routines {
-        id := goroutineID(routine.ID)
-        foundTargets[id] = struct{}{}
-        if id == p.activeGoroutineID {
-            // Ignore activeGoroutine.
-            continue
-        }
-        _, ok := p.activeTargets[id]
-        if !ok {
-            target := &Target{
-                ID: id,
-                Proxy: p,
-            }
-            target.Attach()
-            p.activeTargets[id] = target
-        }
+    variable, err := p.client.EvalVariable(dbgClient.EvalScope{
+        GoroutineID: goroutineID,
+        Frame: frameId,
+    }, command.Expression, dbgClient.LoadConfig{
+        FollowPointers: true,
+        MaxVariableRecurse: 1,
+        MaxStringLen: 500,
+        MaxArrayValues: 1,
+        MaxStructFields: 1,
+    })
+    if err != nil {
+        fmt.Println("Error: " + err.Error())
+        command.Respond(&debuggerAgent.EvaluateOnCallFrameReturn{
+            ExceptionDetails: &runtimeAgent.ExceptionDetails{
+                ExceptionId: 1,
+                Text: err.Error(),
+                LineNumber: -1,
+                ColumnNumber: -1,
+            },
+        })
+        return
     }
-    for routineID, target := range p.activeTargets {
-        if _, ok := foundTargets[routineID]; !ok {
-            target.Destroy()
-            delete(p.activeTargets, routineID)
-        }
-    }
-    if _, ok := p.activeTargets[p.activeGoroutineID]; !ok {
-        // Grab first item in activeTargets since one was not found.
-        for index, _ := range p.activeTargets {
-            p.activeGoroutineID = index
-            break;
-        }
-    }
+    command.Respond(&debuggerAgent.EvaluateOnCallFrameReturn{
+        Result: p.runtime.MakeRemoteObject(*variable),
+    })
 }
 
 func getFileAndRespond(command debuggerAgent.GetScriptSourceCommand) {
@@ -588,65 +596,4 @@ func getFileAndRespond(command debuggerAgent.GetScriptSourceCommand) {
     command.Respond(&debuggerAgent.GetScriptSourceReturn{
         ScriptSource: string(data),
     })
-}
-
-func makeRemoteObject(variable dbgClient.Variable) runtimeAgent.RemoteObject {
-    //name := variable.Name
-    kind := variable.Kind
-    outKind := runtimeAgent.RemoteObjectTypeSymbol
-    var subType runtimeAgent.RemoteObjectSubtypeEnum
-    var subTypePtr *runtimeAgent.RemoteObjectSubtypeEnum
-
-    previewType := runtimeAgent.ObjectPreviewTypeSymbol
-    var previewSubType runtimeAgent.ObjectPreviewSubtypeEnum
-    var previewSubTypePtr *runtimeAgent.ObjectPreviewSubtypeEnum
-    if kind == reflect.Bool {
-        outKind = runtimeAgent.RemoteObjectTypeBoolean
-    } else if kind == reflect.Int || kind == reflect.Int8 || kind == reflect.Int16 || kind == reflect.Int32 ||
-              kind == reflect.Int64 || kind == reflect.Uint || kind == reflect.Uint8 || kind == reflect.Uint16 ||
-              kind == reflect.Uint32 || kind == reflect.Uint64 || kind == reflect.Uintptr || kind == reflect.Float32 ||
-              kind == reflect.Float64 {
-        outKind = runtimeAgent.RemoteObjectTypeNumber
-    } else if kind == reflect.Complex64 || kind == reflect.Complex128 {
-    } else if kind == reflect.Array {
-        outKind = runtimeAgent.RemoteObjectTypeObject
-        subType = runtimeAgent.RemoteObjectSubtypeArray
-        subTypePtr = &subType
-
-        previewType = runtimeAgent.ObjectPreviewTypeObject
-        previewSubType = runtimeAgent.ObjectPreviewSubtypeArray
-        previewSubTypePtr = &previewSubType
-    } else if kind == reflect.Chan {
-    } else if kind == reflect.Func {
-        outKind = runtimeAgent.RemoteObjectTypeFunction
-    } else if kind == reflect.Interface {
-    } else if kind == reflect.Map {
-        outKind = runtimeAgent.RemoteObjectTypeObject
-        subType = runtimeAgent.RemoteObjectSubtypeMap
-        subTypePtr = &subType
-    } else if kind == reflect.Ptr {
-    } else if kind == reflect.Slice {
-        outKind = runtimeAgent.RemoteObjectTypeObject
-        subType = runtimeAgent.RemoteObjectSubtypeArray
-        subTypePtr = &subType
-    } else if kind == reflect.String {
-        outKind = runtimeAgent.RemoteObjectTypeString
-        previewType = runtimeAgent.ObjectPreviewTypeString
-    } else if kind == reflect.Struct {
-        outKind = runtimeAgent.RemoteObjectTypeObject
-    } else if kind == reflect.UnsafePointer {
-    }
-
-    return runtimeAgent.RemoteObject{
-        Type: outKind,
-        Subtype: subTypePtr,
-        Value: variable.Value,
-        Preview: &runtimeAgent.ObjectPreview{
-            Type: previewType,
-            Subtype: previewSubTypePtr,
-            Overflow: false,
-            Properties: []runtimeAgent.PropertyPreview{},
-            // Entries: &[]runtimeAgent.EntryPreview{},
-        },
-    }
 }

@@ -14,6 +14,7 @@ const API_PORT_LISTENING_STRING string = "API server listening at: 127.0.0.1:%d\
 
 type Client struct{
     File string
+    Args []string
     isReady bool
     isReadyLock sync.Mutex
     rpcClient *rpc2.RPCClient
@@ -25,7 +26,19 @@ type Client struct{
 func (c *Client) Start() {
     c.isReadyLock.Lock()
     defer c.isReadyLock.Unlock()
-    c.cmd = exec.Command(config.DVL_PATH, "debug", "--headless", "--build-flags=-gcflags='-N -l'", "--api-version=2", "--listen=localhost:0", c.File)
+    args := []string{
+        "debug",
+        "--headless",
+        "--build-flags=-gcflags='-N -l'",
+        "--api-version=2",
+        "--listen=localhost:0",
+        c.File,
+    }
+    if len(args) > 0 {
+        args = append(args, "--")
+        args = append(args, c.Args...)
+    }
+    c.cmd = exec.Command(config.DVL_PATH, args...)
 
     var err error
     c.stdout, err = c.cmd.StdoutPipe()

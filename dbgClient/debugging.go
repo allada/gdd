@@ -59,3 +59,8 @@ func (c *Client) ListLocalVariables(scope EvalScope, cfg LoadConfig) ([]Variable
     variables, err := c.rpcClient.ListLocalVariables(api.EvalScope(scope), api.LoadConfig(cfg))
     return *(*[]Variable)(unsafe.Pointer(&variables)), err
 }
+
+func (c *Client) EvalVariable(scope EvalScope, expr string, cfg LoadConfig) (*Variable, error) {
+    variable, err := c.rpcClient.EvalVariable(api.EvalScope(scope), expr, api.LoadConfig(cfg))
+    return (*Variable)(variable), err
+}

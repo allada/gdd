@@ -5,12 +5,16 @@ func main() {
     fmt.Println(helloWorldVar)
     helloWorldVar = "goodnight world"
     fmt.Println(helloWorldVar)
-    PrintStuffOut()
+    waitChan := make(chan bool)
+    go PrintStuffOut(waitChan)
     fmt.Println("hello world")
+    <-waitChan
 }
 
-func PrintStuffOut() {
-    fmt.Println("hello world")
+func PrintStuffOut(waitChan chan<- bool) {
+    data := "hello world"
+    fmt.Println(data)
+    waitChan <-true
     return
     fmt.Println("hello world")
 }

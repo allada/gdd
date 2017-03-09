@@ -1,7 +1,8 @@
 package main
 
 import (
-    //"fmt"
+    "os"
+    "strconv"
     "net/http"
     "./protocol/shared"
     "./proxies/debugger"
@@ -10,21 +11,45 @@ import (
     "./dbgClient"
 )
 
-func handleDebugRequest(conn *shared.Connection) {
+type handler struct {
+    File string
+    Args []string
+}
+
+func (h handler) handleDebugRequest(conn *shared.Connection) {
     client := &dbgClient.Client{
-        File: "./helloworld.go",
+        File: h.File,
+        Args: h.Args,
     }
     runtime := runtime.NewProxy(conn, client)
     go client.Start()
     go runtime.Start()
-    go debugger.NewProxy(conn, client).Start(runtime.Agent())
+    go debugger.NewProxy(conn, client).Start(runtime)
     go page.NewProxy(conn, client).Start()
     // go log.NewProxy(conn, client).Start()
 }
 
 func main() {
-    http.Handle("/", shared.Handler(handleDebugRequest))
-    err := http.ListenAndServe(":9922", nil)
+    // TODO This is ugly and should be cleaned up.
+    port := "9922"
+    file := "./helloworld.go"
+    args := os.Args[1:]
+    if len(os.Args) > 1 {
+        if len(os.Args) > 2 {
+            file = os.Args[2]
+        }
+        if _, err := strconv.Atoi(os.Args[1]); err != nil {
+            panic("Expected first argument to be a valid port number if it exists")
+        }
+        port = os.Args[1]
+        args = os.Args[2:]
+    }
+    h := handler{
+        File: file,
+        Args: args,
+    }
+    http.Handle("/", shared.Handler(h.handleDebugRequest))
+    err := http.ListenAndServe(":" + port, nil)
     if err != nil {
         panic("ListenAndServe: " + err.Error())
     }
