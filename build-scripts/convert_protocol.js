@@ -181,21 +181,28 @@ for (var domain of domains.values()) {
             switchData.push(`            var out ${commandName}Command`);
             switchData.push(`            if data != nil {`);
             switchData.push(`                if err := json.Unmarshal(*data, &out); err != nil {`);
-            switchData.push(`                    panic(err)`);
+            switchData.push(`                    fmt.Println("Closing connection because malformed json was sent.")`);
+            switchData.push(`                    agent.conn.Close()`);
+            switchData.push(`                    return`);
             switchData.push(`                }`);
             switchData.push(`            }`);
             switchData.push(`            out.DestinationTargetID = targetId`);
             switchData.push(`            out.responseId = id`);
             switchData.push(`            out.conn = agent.conn`);
-            switchData.push(`            for _, c := range agent.commandChans.${commandName} {`);
-            switchData.push(`                c <-out`);
+            switchData.push(`            if len(agent.commandChans.${commandName}) == 0 {`);
+            switchData.push(`                out.RespondWithError(shared.ErrorCodeMethodNotFound, "")`);
+            switchData.push(`                break`);
             switchData.push(`            }`);
-            commandSlices.push(`        ${commandName} []chan<- ${commandName}Command`);
+            switchData.push(`            for _, fn := range agent.commandChans.${commandName} {`);
+            switchData.push(`                fn(out)`);
+            switchData.push(`            }`);
+            commandSlices.push(`        ${commandName} []func(${commandName}Command)`);
         }
         commandSlices.push(`    }`);
     }
     switchData.push(`        default:`);
     switchData.push(`            fmt.Printf("Command %s unknown\\n", funcName)`);
+    switchData.push(`            agent.conn.SendErrorResult(id, targetId, shared.ErrorCodeMethodNotFound, "")`);
     switchData.push(`    }`);
 
     var helperData = [
@@ -217,6 +224,26 @@ ${commandSlices.join('\n')}
 }`,
 '',
 `func (agent *${domainName}Agent) ProcessCommand(id int64, targetId string, funcName string, data *json.RawMessage) {
+    defer func() {
+        data := recover()
+        switch data.(type) {
+        case nil:
+            return
+        case shared.Warning:
+            fmt.Println(data)
+        case shared.Error:
+            fmt.Println("Closing websocket because of following Error:")
+            fmt.Println(data)
+            agent.conn.Close()
+        case error:
+            fmt.Println("Closing websocket because of following Error:")
+            fmt.Println(data)
+            agent.conn.Close()
+        default:
+            fmt.Println("Should probably use shared.Warning or shared.Error instead to panic()")
+            panic(data)
+        }
+    }()
 ${switchData.join('\n')}
 }`,
 '',
@@ -249,10 +276,8 @@ ${switchData.join('\n')}
         for (var command of domain.commands) {
             var commandName = command.name.capitalize();
             helperData.push(
-`func (agent *${domainName}Agent) ${commandName}Notify() <-chan ${commandName}Command {
-    outChan := make(chan ${commandName}Command)
-    agent.commandChans.${commandName} = append(agent.commandChans.${commandName}, outChan)
-    return outChan
+`func (agent *${domainName}Agent) ${commandName}Handler(handler func(${commandName}Command)) {
+    agent.commandChans.${commandName} = append(agent.commandChans.${commandName}, handler)
 }`);
         }
     }
@@ -335,6 +360,22 @@ type ReceivedCommand struct {
     Params *json.RawMessage \`json:"params,omitempty"\`
 }
 
+type Error struct {
+    msg string
+}
+
+func (e Error) Error() string {
+    return e.msg
+}
+
+type Warning struct {
+    msg string
+}
+
+func (w Warning) Error() string {
+    return w.msg
+}
+
 func (rc *ReceivedCommand) agentAndCommand() (agent string, command string, ok bool) {
     parts := strings.Split(rc.Method, ".")
     if len(parts) < 2 {
@@ -351,6 +392,15 @@ type Agenter interface {
 type Connection struct {
     ws *websocket.Conn
     agents map[string]Agenter
+    isClosed bool
+}
+
+func (c *Connection) Close() {
+    if c.isClosed {
+        return
+    }
+    c.isClosed = true
+    c.ws.Close()
 }
 
 func (c *Connection) RegisterAgent(agent Agenter) {
@@ -358,11 +408,14 @@ func (c *Connection) RegisterAgent(agent Agenter) {
     c.agents[agent.Name()] = agent
 }
 
+func (c *Connection) Closed() bool {
+    return c.isClosed
+}
+
 func (c *Connection) SendToTarget(targetId string, event interface{}) {
-    //message, err := json.Marshal(event)
-    //if err != nil {
-    //    panic(err)
-    //}
+    if c.isClosed {
+        return
+    }
     data := struct {
         TargetId string \`json:"targetId"\`
         Message interface{} \`json:"message"\`
@@ -377,10 +430,16 @@ func (c *Connection) SendToTarget(targetId string, event interface{}) {
 }
 
 func (c *Connection) Send(event Notification) {
+    if c.isClosed {
+        return
+    }
     websocket.JSON.Send(c.ws, event)
 }
 
 func (c *Connection) SendErrorResult(id int64, targetId string, errorCode ResponseErrorCodes, message string) {
+    if c.isClosed {
+        return
+    }
     data := Response{
         Id: id,
         Status: StatusCodeError,
@@ -398,6 +457,9 @@ func (c *Connection) SendErrorResult(id int64, targetId string, errorCode Respon
 }
 
 func (c *Connection) SendResult(id int64, targetId string, result interface{}) {
+    if c.isClosed {
+        return
+    }
     data := Response{
         Id: id,
         Result: result,
@@ -411,18 +473,20 @@ func (c *Connection) SendResult(id int64, targetId string, result interface{}) {
 }
 
 func (c *Connection) socketListener() {
-    defer c.ws.Close()
+    defer c.Close()
     for {
         var message []byte
         err := websocket.Message.Receive(c.ws, &message)
-        if err == io.EOF {
+        if c.isClosed {
+            return
+        } else if err == io.EOF {
             fmt.Println("Connection closed by remote")
             return
         } else if err != nil {
             panic(err)
         }
-        fmt.Print("Recv: ")
-        fmt.Println(string(message))
+        // fmt.Print("Recv: ")
+        // fmt.Println(string(message))
 
         var receivedCommand ReceivedCommand
         err = json.Unmarshal(message, &receivedCommand)
@@ -463,7 +527,7 @@ func (c *Connection) socketListener() {
         var agent Agenter
         agent, ok = c.agents[agentName]
         if !ok {
-            fmt.Printf("Agent '%s' not registered.\\n", agentName)
+            // fmt.Printf("Agent '%s' not registered.\\n", agentName)
             continue
         }
         go agent.ProcessCommand(receivedCommand.Id, targetId, command, params)

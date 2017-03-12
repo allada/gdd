@@ -94,6 +94,7 @@ type proxy struct {
     client *dbgClient.Client
     runtime runtimer
 
+    enabled bool
     activeTargetsMux sync.RWMutex
     activeTargets map[goroutineID]*Target
     fileList []string
@@ -114,13 +115,22 @@ func NewProxy(conn *shared.Connection, client *dbgClient.Client) *proxy {
     }
 }
 
-func (p *proxy) Start(runtime runtimer) {
-    p.runtime = runtime
-    // Wait until we are enabled.
-    command := <-p.agent.EnableNotify()
+func (p *proxy) enableAndRespond(command debuggerAgent.EnableCommand) {
     command.Respond()
+    if p.enabled {
+        return
+    }
+    p.enabled = true
 
-    go p.handleNotifications()
+    p.agent.SetBreakpointByUrlHandler(p.setBreakpointAndRespond)
+    p.agent.RemoveBreakpointHandler(p.removeBreakpointAndRespond)
+    p.agent.StepOverHandler(p.stepOverAndRespond)
+    p.agent.StepIntoHandler(p.stepIntoAndRespond)
+    p.agent.StepOutHandler(p.stepOutAndRespond)
+    p.agent.ResumeHandler(p.continueAndRespond)
+    p.agent.GetScriptSourceHandler(getFileAndRespond)
+    p.agent.EvaluateOnCallFrameHandler(p.evaluateOnGoroutineAndRespond)
+
     go p.runtime.CreateContext()
 
     // Wait until debugger is ready.
@@ -155,86 +165,10 @@ func (p *proxy) Start(runtime runtimer) {
     }
 }
 
-func (p *proxy) handleNotifications() {
-    enable                  := p.agent.EnableNotify()
-    disable                 := p.agent.DisableNotify()
-    setBreakpointsActive    := p.agent.SetBreakpointsActiveNotify()
-    setSkipAllPauses        := p.agent.SetSkipAllPausesNotify()
-    setBreakpointByUrl      := p.agent.SetBreakpointByUrlNotify()
-    setBreakpoint           := p.agent.SetBreakpointNotify()
-    removeBreakpoint        := p.agent.RemoveBreakpointNotify()
-    getPossibleBreakpoints  := p.agent.GetPossibleBreakpointsNotify()
-    continueToLocation      := p.agent.ContinueToLocationNotify()
-    stepOver                := p.agent.StepOverNotify()
-    stepInto                := p.agent.StepIntoNotify()
-    stepOut                 := p.agent.StepOutNotify()
-    pause                   := p.agent.PauseNotify()
-    resume                  := p.agent.ResumeNotify()
-    searchInContent         := p.agent.SearchInContentNotify()
-    setScriptSource         := p.agent.SetScriptSourceNotify()
-    restartFrame            := p.agent.RestartFrameNotify()
-    getScriptSource         := p.agent.GetScriptSourceNotify()
-    setPauseOnExceptions    := p.agent.SetPauseOnExceptionsNotify()
-    evaluateOnCallFrame     := p.agent.EvaluateOnCallFrameNotify()
-    setVariableValue        := p.agent.SetVariableValueNotify()
-    setAsyncCallStackDepth  := p.agent.SetAsyncCallStackDepthNotify()
-    setBlackboxPatterns     := p.agent.SetBlackboxPatternsNotify()
-    setBlackboxedRanges     := p.agent.SetBlackboxedRangesNotify()
-
-    // TODO bail out properly on closed.
-    for {
-        select {
-        case command := <-enable:
-            command.Respond()
-        case command := <-disable:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-setBreakpointsActive:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-setSkipAllPauses:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-setBreakpointByUrl:
-            go p.setBreakpointAndRespond(command)
-        case command := <-setBreakpoint:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-removeBreakpoint:
-            go p.removeBreakpointAndRespond(command)
-        case command := <-getPossibleBreakpoints:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-continueToLocation:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-stepOver:
-            go p.stepOverAndRespond(command)
-        case command := <-stepInto:
-            go p.stepIntoAndRespond(command)
-        case command := <-stepOut:
-            go p.stepOutAndRespond(command)
-        case command := <-pause:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-resume:
-            go p.continueAndRespond(command)
-        case command := <-searchInContent:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-setScriptSource:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-restartFrame:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-getScriptSource:
-            // TODO this should be secure
-            go getFileAndRespond(command)
-        case command := <-setPauseOnExceptions:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-evaluateOnCallFrame:
-            go p.evaluateOnGoroutineAndRespond(command)
-        case command := <-setVariableValue:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-setAsyncCallStackDepth:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-setBlackboxPatterns:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        case command := <-setBlackboxedRanges:
-            command.RespondWithError(shared.ErrorCodeMethodNotFound, "")
-        }
-    }
+func (p *proxy) Start(runtime runtimer) {
+    p.runtime = runtime
+    // Wait until we are enabled.
+    p.agent.EnableHandler(p.enableAndRespond)
 }
 
 func buildLocation(file string, line int) debuggerAgent.Location {

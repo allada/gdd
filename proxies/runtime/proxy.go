@@ -14,25 +14,18 @@ import (
 type proxy struct {
     agent *runtimeAgent.RuntimeAgent
     client *dbgClient.Client
+    conn *shared.Connection
+
+    enabled bool
 }
 
 func NewProxy(conn *shared.Connection, client *dbgClient.Client) *proxy {
     agent := runtimeAgent.NewAgent(conn)
     return &proxy{
+        conn: conn,
         agent: agent,
         client: client,
     }
-}
-
-func (p *proxy) Start() {
-    // Wait until we are enabled.
-    enableChan := p.agent.EnableNotify()
-    command := <-enableChan
-    command.Respond()
-
-    go p.handleNotifications()
-    go p.handleStdout()
-    go p.handleStderr()
 }
 
 func (p *proxy) CreateContext() {
@@ -45,20 +38,28 @@ func (p *proxy) CreateContext() {
     })
 }
 
-func (p *proxy) handleNotifications() {
-    enable       := p.agent.EnableNotify()
-    getProperies := p.agent.GetPropertiesNotify()
-    compileScript := p.agent.CompileScriptNotify()
-    for {
-        select {
-        case command := <-enable:
-            command.Respond()
-        case command := <-getProperies:
-            go p.getPropertiesAndRespond(command)
-        case command := <-compileScript:
-            command.Respond(nil)
-        }
+func (p *proxy) Start() {
+    // Wait until we are enabled.
+    p.agent.EnableHandler(p.enableAndRespond)
+}
+
+func (p *proxy) enableAndRespond(command runtimeAgent.EnableCommand) {
+    command.Respond()
+
+    if p.enabled {
+        return
     }
+    p.enabled = true
+
+    p.agent.GetPropertiesHandler(p.getPropertiesAndRespond)
+    p.agent.CompileScriptHandler(p.compileScriptAndRespond)
+
+    go p.handleStdout()
+    go p.handleStderr()
+}
+
+func (p *proxy) compileScriptAndRespond(command runtimeAgent.CompileScriptCommand) {
+    command.Respond(nil)
 }
 
 func (p *proxy) getPropertiesAndRespond(command runtimeAgent.GetPropertiesCommand) {
@@ -112,6 +113,17 @@ func (p *proxy) getPropertiesAndRespond(command runtimeAgent.GetPropertiesComman
     }
 }
 
+func (p *proxy) getAndSyncCloseState() bool {
+    if p.conn.Closed() {
+        p.client.Kill()
+        return true
+    } else if p.client.Killed() {
+        p.conn.Close()
+        return true
+    }
+    return false
+}
+
 func (p *proxy) handleStdout() {
     stdout, err := p.client.GetStdout()
     if err != nil {
@@ -119,9 +131,12 @@ func (p *proxy) handleStdout() {
     }
     reader := bufio.NewReader(stdout)
     for {
+        if p.getAndSyncCloseState() {
+            return
+        }
         data, _, err := reader.ReadLine()
         if err != nil {
-            panic(err)
+            
         }
         fmt.Println("Stdout: ", string(data))
         p.agent.FireConsoleAPICalled(runtimeAgent.ConsoleAPICalledEvent{
@@ -145,6 +160,9 @@ func (p *proxy) handleStderr() {
     }
     reader := bufio.NewReader(stderr)
     for {
+        if p.getAndSyncCloseState() {
+            return
+        }
         data, notDone, err := reader.ReadLine()
         if !notDone {
             fmt.Println("stdout too big!")
@@ -166,6 +184,7 @@ func (p *proxy) handleStderr() {
     }
 }
 
+// TODO This is horrible, must fix!
 func (p *proxy) MakeRemoteObject(variable dbgClient.Variable) runtimeAgent.RemoteObject {
     //name := variable.Name
     kind := variable.Kind

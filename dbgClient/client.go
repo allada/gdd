@@ -19,13 +19,19 @@ type Client struct{
     isReadyLock sync.Mutex
     rpcClient *rpc2.RPCClient
     cmd *exec.Cmd
+    killed bool
     stdout io.ReadCloser
     stderr io.ReadCloser
 }
 
 func (c *Client) Start() {
+    defer func() {
+        if r := recover(); r != nil {
+            c.Kill()
+        }
+        c.isReadyLock.Unlock()
+    }()
     c.isReadyLock.Lock()
-    defer c.isReadyLock.Unlock()
     args := []string{
         "debug",
         "--headless",
@@ -51,7 +57,7 @@ func (c *Client) Start() {
         panic(err)
     }
 
-    if err := c.cmd.Start(); err != nil {
+    if err = c.cmd.Start(); err != nil {
         panic(err)
     }
 
@@ -75,9 +81,21 @@ func (c *Client) Start() {
     c.isReady = true
 }
 
+func (c *Client) Killed() bool {
+    return c.killed
+}
+
+func (c *Client) Kill() {
+    if c.killed {
+        return
+    }
+    c.killed = true
+    c.Detach(true)
+}
+
 func (c *Client) GetStdout() (io.ReadCloser, error) {
     c.BlockUntilReady()
-    // This is done so it errors properly.
+    // This is done so it errors properly and passes ownership.
     defer func() {
         c.stdout = nil
     }()
@@ -86,7 +104,7 @@ func (c *Client) GetStdout() (io.ReadCloser, error) {
 
 func (c *Client) GetStderr() (io.ReadCloser, error) {
     c.BlockUntilReady()
-    // This is done so it errors properly.
+    // This is done so it errors properly and passes ownership.
     defer func() {
         c.stderr = nil
     }()

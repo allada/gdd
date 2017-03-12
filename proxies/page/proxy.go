@@ -25,11 +25,17 @@ func (p *proxy) Agent() *pageAgent.PageAgent {
 
 func (p *proxy) Start() {
     // Wait until we are enabled.
-    command := <-p.agent.EnableNotify()
+    p.agent.EnableHandler(p.enableAndRespond)
+}
+
+func (p *proxy) enableAndRespond(command pageAgent.EnableCommand) {
     command.Respond()
 
-    resourceTreeCommand := <-p.agent.GetResourceTreeNotify()
-    resourceTreeCommand.Respond(&pageAgent.GetResourceTreeReturn{
+    p.agent.GetResourceTreeHandler(p.getResourceTreeAndRespond)
+}
+
+func (p *proxy) getResourceTreeAndRespond(command pageAgent.GetResourceTreeCommand) {
+    command.Respond(&pageAgent.GetResourceTreeReturn{
         FrameTree: pageAgent.FrameResourceTree{
             Frame: pageAgent.Frame{
                 Id: "1",
