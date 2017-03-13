@@ -15,7 +15,6 @@ const API_PORT_LISTENING_STRING string = "API server listening at: 127.0.0.1:%d\
 type Client struct{
     File string
     Args []string
-    isReady bool
     isReadyLock sync.Mutex
     rpcClient *rpc2.RPCClient
     cmd *exec.Cmd
@@ -78,7 +77,6 @@ func (c *Client) Start() {
     for _, breakpoint := range breakpoints {
         c.ClearBreakpoint((*breakpoint).ID)
     }
-    c.isReady = true
 }
 
 func (c *Client) Killed() bool {
@@ -126,9 +124,6 @@ func (c *Client) setupBreakOnStart() {
 }
 
 func (c *Client) BlockUntilReady() {
-    if c.isReady {
-        return
-    }
     c.isReadyLock.Lock()
     c.isReadyLock.Unlock()
 }

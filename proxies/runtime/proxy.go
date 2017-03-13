@@ -6,6 +6,7 @@ import (
     "strconv"
     "strings"
     "reflect"
+    "sync/atomic"
     "../../dbgClient"
     "../../protocol/shared"
     runtimeAgent "../../protocol/runtime"
@@ -16,7 +17,7 @@ type proxy struct {
     client *dbgClient.Client
     conn *shared.Connection
 
-    enabled bool
+    enabled int32 // Since Go does not have atomic_flag I use int32
 }
 
 func NewProxy(conn *shared.Connection, client *dbgClient.Client) *proxy {
@@ -40,19 +41,19 @@ func (p *proxy) CreateContext() {
 
 func (p *proxy) Start() {
     // Wait until we are enabled.
-    p.agent.EnableHandler(p.enableAndRespond)
+    p.agent.SetEnableHandler(p.enableAndRespond)
 }
 
 func (p *proxy) enableAndRespond(command runtimeAgent.EnableCommand) {
     command.Respond()
 
-    if p.enabled {
+    // This ensures we only execute stuff after this if statment once per agent.
+    if !atomic.CompareAndSwapInt32(&p.enabled, 0, 1) {
         return
     }
-    p.enabled = true
 
-    p.agent.GetPropertiesHandler(p.getPropertiesAndRespond)
-    p.agent.CompileScriptHandler(p.compileScriptAndRespond)
+    p.agent.SetGetPropertiesHandler(p.getPropertiesAndRespond)
+    p.agent.SetCompileScriptHandler(p.compileScriptAndRespond)
 
     go p.handleStdout()
     go p.handleStderr()

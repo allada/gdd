@@ -5,6 +5,7 @@ import (
     "io/ioutil"
     "strconv"
     "sync"
+    "sync/atomic"
     "strings"
     "crypto/sha1"
     "../../dbgClient"
@@ -94,7 +95,7 @@ type proxy struct {
     client *dbgClient.Client
     runtime runtimer
 
-    enabled bool
+    enabled int32 // Since Go does not have atomic_flag I use int32
     activeTargetsMux sync.RWMutex
     activeTargets map[goroutineID]*Target
     fileList []string
@@ -117,19 +118,20 @@ func NewProxy(conn *shared.Connection, client *dbgClient.Client) *proxy {
 
 func (p *proxy) enableAndRespond(command debuggerAgent.EnableCommand) {
     command.Respond()
-    if p.enabled {
+
+    // This ensures we only execute stuff after this if statment once per agent.
+    if !atomic.CompareAndSwapInt32(&p.enabled, 0, 1) {
         return
     }
-    p.enabled = true
 
-    p.agent.SetBreakpointByUrlHandler(p.setBreakpointAndRespond)
-    p.agent.RemoveBreakpointHandler(p.removeBreakpointAndRespond)
-    p.agent.StepOverHandler(p.stepOverAndRespond)
-    p.agent.StepIntoHandler(p.stepIntoAndRespond)
-    p.agent.StepOutHandler(p.stepOutAndRespond)
-    p.agent.ResumeHandler(p.continueAndRespond)
-    p.agent.GetScriptSourceHandler(getFileAndRespond)
-    p.agent.EvaluateOnCallFrameHandler(p.evaluateOnGoroutineAndRespond)
+    p.agent.SetSetBreakpointByUrlHandler(p.setBreakpointAndRespond)
+    p.agent.SetRemoveBreakpointHandler(p.removeBreakpointAndRespond)
+    p.agent.SetStepOverHandler(p.stepOverAndRespond)
+    p.agent.SetStepIntoHandler(p.stepIntoAndRespond)
+    p.agent.SetStepOutHandler(p.stepOutAndRespond)
+    p.agent.SetResumeHandler(p.continueAndRespond)
+    p.agent.SetGetScriptSourceHandler(getFileAndRespond)
+    p.agent.SetEvaluateOnCallFrameHandler(p.evaluateOnGoroutineAndRespond)
 
     go p.runtime.CreateContext()
 
@@ -168,7 +170,7 @@ func (p *proxy) enableAndRespond(command debuggerAgent.EnableCommand) {
 func (p *proxy) Start(runtime runtimer) {
     p.runtime = runtime
     // Wait until we are enabled.
-    p.agent.EnableHandler(p.enableAndRespond)
+    p.agent.SetEnableHandler(p.enableAndRespond)
 }
 
 func buildLocation(file string, line int) debuggerAgent.Location {

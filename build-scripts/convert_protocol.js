@@ -92,9 +92,12 @@ for (var domain of domains.values()) {
             returnData.push ('}');
             commands.push(`type ${command.name.capitalize()}Return ${returnData.join('\n')}`);
             commands.push('');
-            // go send(ws, protocol.ErrorResult{Id: id, Status: protocol.StatusCodeError, Error: protocol.ErrorResponse{
-            //     Code: protocol.ErrorCodeMethodNotFound,
-            // }})
+            commands.push(`func (c *${command.name.capitalize()}Command) Initalize(targetId string, responseId int64, conn *shared.Connection) {`);
+            commands.push(`    c.DestinationTargetID = targetId`);
+            commands.push(`    c.responseId = responseId`);
+            commands.push(`    c.conn = conn`);
+            commands.push(`}`);
+            commands.push('');
             commands.push(`func (c *${command.name.capitalize()}Command) RespondWithError(code shared.ResponseErrorCodes, message string) {`);
             commands.push(`    c.conn.SendErrorResult(c.responseId, c.DestinationTargetID, code, message)`);
             commands.push(`}`);
@@ -172,31 +175,39 @@ for (var domain of domains.values()) {
 
     var commandSlices = [];
     var switchData = [];
+    var commandFnDefinitions = [];
     switchData.push(`    switch (funcName) {`)
     if ('commands' in domain) {
-        commandSlices.push(`    commandChans struct {`);
+        commandSlices.push(`    commandHandlers struct {`);
         for (var command of domain.commands) {
             var commandName = command.name.capitalize();
             switchData.push(`        case "${command.name}":`)
             switchData.push(`            var out ${commandName}Command`);
-            switchData.push(`            if data != nil {`);
-            switchData.push(`                if err := json.Unmarshal(*data, &out); err != nil {`);
-            switchData.push(`                    fmt.Println("Closing connection because malformed json was sent.")`);
-            switchData.push(`                    agent.conn.Close()`);
-            switchData.push(`                    return`);
-            switchData.push(`                }`);
-            switchData.push(`            }`);
-            switchData.push(`            out.DestinationTargetID = targetId`);
-            switchData.push(`            out.responseId = id`);
-            switchData.push(`            out.conn = agent.conn`);
-            switchData.push(`            if len(agent.commandChans.${commandName}) == 0 {`);
+            switchData.push(`            agent.conn.SetupCommand(id, targetId, data, &out)`);
+            switchData.push(`            fn := agent.commandHandlers.${commandName}.Load()`);
+            switchData.push(`            if fn == nil {`);
             switchData.push(`                out.RespondWithError(shared.ErrorCodeMethodNotFound, "")`);
             switchData.push(`                break`);
             switchData.push(`            }`);
-            switchData.push(`            for _, fn := range agent.commandChans.${commandName} {`);
-            switchData.push(`                fn(out)`);
-            switchData.push(`            }`);
-            commandSlices.push(`        ${commandName} []func(${commandName}Command)`);
+            switchData.push(`            fn(out)`);
+            commandFnDefinitions.push(`type ${commandName}CommandFn struct {`);
+            commandFnDefinitions.push(`    mux sync.RWMutex`);
+            commandFnDefinitions.push(`    fn func(${commandName}Command)`);
+            commandFnDefinitions.push(`}`);
+            commandFnDefinitions.push(``);
+            commandFnDefinitions.push(`func (a *${commandName}CommandFn) Load() func(${commandName}Command) {`);
+            commandFnDefinitions.push(`    a.mux.RLock()`);
+            commandFnDefinitions.push(`    defer a.mux.RUnlock()`);
+            commandFnDefinitions.push(`    return a.fn`);
+            commandFnDefinitions.push(`}`);
+            commandFnDefinitions.push(``);
+            commandFnDefinitions.push(`func (a *${commandName}CommandFn) Store(fn func(${commandName}Command)) {`);
+            commandFnDefinitions.push(`    a.mux.Lock()`);
+            commandFnDefinitions.push(`    defer a.mux.Unlock()`);
+            commandFnDefinitions.push(`    a.fn = fn`);
+            commandFnDefinitions.push(`}`);
+            commandFnDefinitions.push(``);
+            commandSlices.push(`        ${commandName} ${commandName}CommandFn`);
         }
         commandSlices.push(`    }`);
     }
@@ -276,8 +287,8 @@ ${switchData.join('\n')}
         for (var command of domain.commands) {
             var commandName = command.name.capitalize();
             helperData.push(
-`func (agent *${domainName}Agent) ${commandName}Handler(handler func(${commandName}Command)) {
-    agent.commandChans.${commandName} = append(agent.commandChans.${commandName}, handler)
+`func (agent *${domainName}Agent) Set${commandName}Handler(handler func(${commandName}Command)) {
+    agent.commandHandlers.${commandName}.Store(handler)
 }`);
         }
     }
@@ -295,11 +306,11 @@ ${switchData.join('\n')}
     // }
     // headerData.push(')');
     // headerData.push('');
-    var sharedTypesHeaders = [packageData.join('\n'), 'import (', '    "../shared"', '    "encoding/json"', '    "fmt"', ')'];
+    var sharedTypesHeaders = [packageData.join('\n'), 'import (', '    "../shared"', '    "sync"', '    "encoding/json"', '    "fmt"', ')'];
     // if ('events' in domain && domain.events.length) {
     //     sharedTypesHeaders.push(headerData.join('\n'));
     // }
-    fs.writeFileSync('./protocol/' + domainName.toLowerCase() + '/agent.go', [sharedTypesHeaders.join('\n'), helperData.join('\n')].join('\n'));
+    fs.writeFileSync('./protocol/' + domainName.toLowerCase() + '/agent.go', [sharedTypesHeaders.join('\n'), commandFnDefinitions.join('\n'), helperData.join('\n')].join('\n'));
 }
 try {
     fs.mkdirSync('./protocol/shared/');
@@ -313,6 +324,7 @@ import (
     "golang.org/x/net/websocket"
     "strings"
     "encoding/json"
+    "sync/atomic"
     "fmt"
 )
 
@@ -389,17 +401,21 @@ type Agenter interface {
     ProcessCommand(int64, string, string, *json.RawMessage)
 }
 
+type Commander interface {
+    Initalize(targetId string, responseId int64, conn *Connection)
+}
+
 type Connection struct {
     ws *websocket.Conn
     agents map[string]Agenter
-    isClosed bool
+    closed int32 // Since Go does not have atomic_flag I use int32
 }
 
 func (c *Connection) Close() {
-    if c.isClosed {
+    // This ensures we only execute stuff after this if statment once per agent.
+    if !atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
         return
     }
-    c.isClosed = true
     c.ws.Close()
 }
 
@@ -409,11 +425,22 @@ func (c *Connection) RegisterAgent(agent Agenter) {
 }
 
 func (c *Connection) Closed() bool {
-    return c.isClosed
+    return atomic.LoadInt32(&c.closed) == 1
+}
+
+func (c *Connection) SetupCommand(id int64, targetId string, data *json.RawMessage, out Commander) {
+    if data != nil {
+        if err := json.Unmarshal(*data, out); err != nil {
+            fmt.Println("Closing connection because malformed json was sent.")
+            c.Close()
+            return
+        }
+    }
+    out.Initalize(targetId, id, c)
 }
 
 func (c *Connection) SendToTarget(targetId string, event interface{}) {
-    if c.isClosed {
+    if c.Closed() {
         return
     }
     data := struct {
@@ -430,14 +457,14 @@ func (c *Connection) SendToTarget(targetId string, event interface{}) {
 }
 
 func (c *Connection) Send(event Notification) {
-    if c.isClosed {
+    if c.Closed() {
         return
     }
     websocket.JSON.Send(c.ws, event)
 }
 
 func (c *Connection) SendErrorResult(id int64, targetId string, errorCode ResponseErrorCodes, message string) {
-    if c.isClosed {
+    if c.Closed() {
         return
     }
     data := Response{
@@ -457,7 +484,7 @@ func (c *Connection) SendErrorResult(id int64, targetId string, errorCode Respon
 }
 
 func (c *Connection) SendResult(id int64, targetId string, result interface{}) {
-    if c.isClosed {
+    if c.Closed() {
         return
     }
     data := Response{
@@ -477,7 +504,7 @@ func (c *Connection) socketListener() {
     for {
         var message []byte
         err := websocket.Message.Receive(c.ws, &message)
-        if c.isClosed {
+        if c.Closed() {
             return
         } else if err == io.EOF {
             fmt.Println("Connection closed by remote")

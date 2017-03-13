@@ -21,12 +21,12 @@ func (h handler) handleDebugRequest(conn *shared.Connection) {
         File: h.File,
         Args: h.Args,
     }
-    runtime := runtime.NewProxy(conn, client)
     go client.Start()
-    go runtime.Start()
-    go debugger.NewProxy(conn, client).Start(runtime)
+
+    runtimeProxy := runtime.NewProxy(conn, client)
+    go runtimeProxy.Start()
+    go debugger.NewProxy(conn, client).Start(runtimeProxy)
     go page.NewProxy(conn, client).Start()
-    // go log.NewProxy(conn, client).Start()
 }
 
 func main() {

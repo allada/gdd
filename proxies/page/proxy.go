@@ -25,13 +25,13 @@ func (p *proxy) Agent() *pageAgent.PageAgent {
 
 func (p *proxy) Start() {
     // Wait until we are enabled.
-    p.agent.EnableHandler(p.enableAndRespond)
+    p.agent.SetEnableHandler(p.enableAndRespond)
 }
 
 func (p *proxy) enableAndRespond(command pageAgent.EnableCommand) {
     command.Respond()
 
-    p.agent.GetResourceTreeHandler(p.getResourceTreeAndRespond)
+    p.agent.SetGetResourceTreeHandler(p.getResourceTreeAndRespond)
 }
 
 func (p *proxy) getResourceTreeAndRespond(command pageAgent.GetResourceTreeCommand) {
