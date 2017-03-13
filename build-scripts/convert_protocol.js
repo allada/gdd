@@ -235,26 +235,7 @@ ${commandSlices.join('\n')}
 }`,
 '',
 `func (agent *${domainName}Agent) ProcessCommand(id int64, targetId string, funcName string, data *json.RawMessage) {
-    defer func() {
-        data := recover()
-        switch data.(type) {
-        case nil:
-            return
-        case shared.Warning:
-            fmt.Println(data)
-        case shared.Error:
-            fmt.Println("Closing websocket because of following Error:")
-            fmt.Println(data)
-            agent.conn.Close()
-        case error:
-            fmt.Println("Closing websocket because of following Error:")
-            fmt.Println(data)
-            agent.conn.Close()
-        default:
-            fmt.Println("Should probably use shared.Warning or shared.Error instead to panic()")
-            panic(data)
-        }
-    }()
+    defer shared.TryRecoverFromPanic(agent.conn)
 ${switchData.join('\n')}
 }`,
 '',
@@ -376,12 +357,20 @@ type Error struct {
     msg string
 }
 
+func ThrowError(msg string) {
+    panic(Error{msg})
+}
+
 func (e Error) Error() string {
     return e.msg
 }
 
 type Warning struct {
     msg string
+}
+
+func ThrowWarning(msg string) {
+    panic(Warning{msg})
 }
 
 func (w Warning) Error() string {
@@ -416,6 +405,7 @@ func (c *Connection) Close() {
     if !atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
         return
     }
+    fmt.Println("Closing socket")
     c.ws.Close()
 }
 
@@ -499,16 +489,43 @@ func (c *Connection) SendResult(id int64, targetId string, result interface{}) {
     c.SendToTarget(targetId, data)
 }
 
+func TryRecoverFromPanic(conn *Connection) {
+    data := recover()
+    switch data.(type) {
+    case nil:
+        return
+    case Warning:
+        fmt.Println(data)
+    case Error:
+        fmt.Println("Closing websocket because of following Error:")
+        fmt.Println(data)
+        conn.Close()
+    case error:
+        fmt.Println("Closing websocket because of following Error:")
+        fmt.Println(data)
+        conn.Close()
+    default:
+        fmt.Println("Should probably use shared.Warning or shared.Error instead to panic()")
+        panic(data)
+    }
+}
+
+
+func WrapFunctionForPanicRecover(fn func(), conn *Connection) func() {
+    return func() {
+        defer TryRecoverFromPanic(conn)
+        fn()
+    }
+}
+
 func (c *Connection) socketListener() {
-    defer c.Close()
     for {
         var message []byte
         err := websocket.Message.Receive(c.ws, &message)
         if c.Closed() {
             return
         } else if err == io.EOF {
-            fmt.Println("Connection closed by remote")
-            return
+            panic(Warning{"Connection closed by remote"})
         } else if err != nil {
             panic(err)
         }
@@ -567,11 +584,13 @@ func Handler(fn func(*Connection)) http.Handler {
             ws: ws,
             agents: make(map[string]Agenter),
         }
+        // Because we cannot call recover() inside another function to recover we do them seperate.
+        defer conn.Close()
+        defer TryRecoverFromPanic(conn)
         fn(conn)
         conn.socketListener()
     })
 }
-
 `);
 //console.log(out);
 

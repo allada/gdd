@@ -3,6 +3,7 @@ package main
 import (
     "os"
     "net/http"
+    "time"
     "./protocol/shared"
     "./proxies/debugger"
     "./proxies/page"
@@ -21,6 +22,18 @@ func (h handler) handleDebugRequest(conn *shared.Connection) {
         Args: h.Args,
     }
     go client.Start()
+
+    go func() {
+        for {
+            // This just ensures we syncronize our sockets if either dies, they both die.
+            if client.Killed() || conn.Closed() {
+                client.Kill()
+                conn.Close()
+                return
+            }
+            time.Sleep(300 * time.Millisecond)
+        }
+    }()
 
     runtimeProxy := runtime.NewProxy(conn, client)
     go runtimeProxy.Start()

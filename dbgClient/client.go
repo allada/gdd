@@ -7,10 +7,18 @@ import (
     "../config"
     "unsafe"
     "sync"
+    "sync/atomic"
     "github.com/derekparker/delve/service/rpc2"
 )
 
 const API_PORT_LISTENING_STRING string = "API server listening at: 127.0.0.1:%d\n"
+
+type ProcessState int32
+const (
+    StartingState = iota
+    RunningState
+    KilledState
+)
 
 type Client struct{
     File string
@@ -18,9 +26,10 @@ type Client struct{
     isReadyLock sync.Mutex
     rpcClient *rpc2.RPCClient
     cmd *exec.Cmd
-    killed bool
+    runningState ProcessState // Since Go does not have atomic_flag I use int32
     stdout io.ReadCloser
     stderr io.ReadCloser
+    stdin io.WriteCloser
 }
 
 func (c *Client) Start() {
@@ -43,6 +52,10 @@ func (c *Client) Start() {
         args = append(args, "--")
         args = append(args, c.Args...)
     }
+    // Looks like we were told to die before we started. Lets die now.
+    if c.Killed() {
+        return
+    }
     c.cmd = exec.Command(config.DVL_PATH, args...)
 
     var err error
@@ -52,6 +65,11 @@ func (c *Client) Start() {
     }
 
     c.stderr, err = c.cmd.StderrPipe()
+    if err != nil {
+        panic(err)
+    }
+
+    c.stdin, err = c.cmd.StdinPipe()
     if err != nil {
         panic(err)
     }
@@ -67,8 +85,15 @@ func (c *Client) Start() {
     }
 
     c.rpcClient = rpc2.NewClient("localhost:" + fmt.Sprintf("%d", port))
+    if ProcessState(atomic.SwapInt32((*int32)(&c.runningState), RunningState)) == KilledState {
+        // Looks like we got a kill signal while we were starting.
+        c.Kill()
+        return
+    }
+
     c.setupBreakOnStart()
     // Continue to newly created breakpoint. We should now be at first instruction in main().
+
     <-c.Continue()
     breakpoints, err := c.ListAllBreakpoints()
     if err != nil {
@@ -79,33 +104,36 @@ func (c *Client) Start() {
     }
 }
 
+func (c *Client) Starting() bool {
+    return ProcessState(atomic.LoadInt32((*int32)(&c.runningState))) == StartingState
+}
+
 func (c *Client) Killed() bool {
-    return c.killed
+    return ProcessState(atomic.LoadInt32((*int32)(&c.runningState))) == KilledState
 }
 
 func (c *Client) Kill() {
-    if c.killed {
+    // This ensures we only execute stuff after this if statment once per agent.
+    if atomic.SwapInt32((*int32)(&c.runningState), KilledState) != RunningState {
         return
     }
-    c.killed = true
-    c.Detach(true)
+    fmt.Println("Killing debugging process")
+    c.Detach(false)
+    c.stdout.Close()
+    c.stderr.Close()
+    c.stdin.Close()
+    c.cmd.Process.Kill()
+    c.cmd.Wait()
+    fmt.Println("Killed debugging process")
 }
 
 func (c *Client) GetStdout() (io.ReadCloser, error) {
     c.BlockUntilReady()
-    // This is done so it errors properly and passes ownership.
-    defer func() {
-        c.stdout = nil
-    }()
     return c.stdout, nil
 }
 
 func (c *Client) GetStderr() (io.ReadCloser, error) {
     c.BlockUntilReady()
-    // This is done so it errors properly and passes ownership.
-    defer func() {
-        c.stderr = nil
-    }()
     return c.stderr, nil
 }
 

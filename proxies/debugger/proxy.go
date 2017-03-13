@@ -93,6 +93,7 @@ type proxy struct {
     agent *debuggerAgent.DebuggerAgent
     target *targetAgent.TargetAgent
     client *dbgClient.Client
+    conn *shared.Connection
     runtime runtimer
 
     enabled int32 // Since Go does not have atomic_flag I use int32
@@ -111,6 +112,7 @@ func NewProxy(conn *shared.Connection, client *dbgClient.Client) *proxy {
         agent: agent,
         target: target,
         client: client,
+        conn: conn,
         activeTargets: map[goroutineID]*Target{},
         breakpoints: map[string]struct{}{},
     }
@@ -133,25 +135,26 @@ func (p *proxy) enableAndRespond(command debuggerAgent.EnableCommand) {
     p.agent.SetGetScriptSourceHandler(getFileAndRespond)
     p.agent.SetEvaluateOnCallFrameHandler(p.evaluateOnGoroutineAndRespond)
 
-    go p.runtime.CreateContext()
+    p.runtime.CreateContext()
 
     // Wait until debugger is ready.
     p.client.BlockUntilReady()
 
     state, err := p.client.GetState()
     if err != nil {
-        panic(err)
+        shared.ThrowError(err.Error())
     }
 
     if state.SelectedGoroutine != nil {
         p.activeGoroutineID = goroutineID(state.SelectedGoroutine.ID)
     }
 
-    go p.sendPauseState()
+    // Closure is needed here because sendPauseState does not have panic recover in it.
+    go shared.WrapFunctionForPanicRecover(p.sendPauseState, p.conn)()
 
     sources, err := p.client.ListSources()
     if err != nil {
-        panic(err)
+        shared.ThrowError(err.Error())
     }
 
     for _, source := range sources {
@@ -186,14 +189,14 @@ func (p *proxy) stepOverAndRespond(command debuggerAgent.StepOverCommand) {
             p.activeGoroutineID = goroutineID(targetID)
         } else {
             command.RespondWithError(shared.ErrorCodeInternalError, "Could not convert targetID to int")
-            panic(err)
+            shared.ThrowError(err.Error())
         }
     }
     
     _, err := p.client.SwitchGoroutine(int(p.activeGoroutineID))
     if err != nil {
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
-        panic(err)
+        shared.ThrowError(err.Error())
     }
 
     p.sendResumeState()
@@ -201,7 +204,7 @@ func (p *proxy) stepOverAndRespond(command debuggerAgent.StepOverCommand) {
 
     if err != nil {
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
-        panic(err)
+        shared.ThrowError(err.Error())
     }
     command.Respond()
     p.sendPauseState()
@@ -213,23 +216,21 @@ func (p *proxy) stepIntoAndRespond(command debuggerAgent.StepIntoCommand) {
             p.activeGoroutineID = goroutineID(targetID)
         } else {
             command.RespondWithError(shared.ErrorCodeInternalError, "Could not convert targetID to int")
-            panic(err)
+            shared.ThrowError(err.Error())
         }
     }
     
     _, err := p.client.SwitchGoroutine(int(p.activeGoroutineID))
     if err != nil {
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
-        panic(err)
-        return
+        shared.ThrowError(err.Error())
     }
 
     p.sendResumeState()
     _, err = p.client.Step()
     if err != nil {
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
-        panic(err)
-        return
+        shared.ThrowError(err.Error())
     }
     command.Respond()
     p.sendPauseState()
@@ -241,23 +242,21 @@ func (p *proxy) stepOutAndRespond(command debuggerAgent.StepOutCommand) {
             p.activeGoroutineID = goroutineID(targetID)
         } else {
             command.RespondWithError(shared.ErrorCodeInternalError, "Could not convert targetID to int")
-            panic(err)
+            shared.ThrowError(err.Error())
         }
     }
     
     _, err := p.client.SwitchGoroutine(int(p.activeGoroutineID))
     if err != nil {
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
-        panic(err)
-        return
+        shared.ThrowError(err.Error())
     }
 
     p.sendResumeState()
     _, err = p.client.StepOut()
     if err != nil {
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
-        panic(err)
-        return
+        shared.ThrowError(err.Error())
     }
     command.Respond()
     p.sendPauseState()
@@ -269,14 +268,14 @@ func (p *proxy) continueAndRespond(command debuggerAgent.ResumeCommand) {
             p.activeGoroutineID = goroutineID(targetID)
         } else {
             command.RespondWithError(shared.ErrorCodeInternalError, "Could not convert targetID to int")
-            panic(err)
+            shared.ThrowError(err.Error())
         }
     }
     
     _, err := p.client.SwitchGoroutine(int(p.activeGoroutineID))
     if err != nil {
         command.RespondWithError(shared.ErrorCodeInternalError, err.Error())
-        panic(err)
+        shared.ThrowError(err.Error())
     }
     command.Respond()
 
@@ -284,8 +283,7 @@ func (p *proxy) continueAndRespond(command debuggerAgent.ResumeCommand) {
     state, ok := <-p.client.Continue()
 
     if !ok {
-        panic("It appears program has exited");
-        return
+        shared.ThrowError("It appears program has exited");
     }
     if state != nil && state.SelectedGoroutine != nil {
         p.activeGoroutineID = goroutineID(state.SelectedGoroutine.ID)
@@ -304,14 +302,15 @@ func (p *proxy) sendResumeState() {
 }
 
 func (p *proxy) sendPauseState() {
+    fmt.Println("HERE")
     state, err := p.client.GetState()
     if err != nil {
-        panic(err)
+        shared.ThrowError(err.Error())
     }
     p.syncGoroutines()
     // TODO Need some checks here on state.
     if state == nil {
-        panic("Called sendPauseState() but not paused.")
+        shared.ThrowError("Called sendPauseState() but not paused.")
     }
 
     p.activeTargetsMux.RLock()
@@ -328,7 +327,7 @@ func (p *proxy) sendPauseState() {
         })
         if err != nil {
             // TODO Something better here.
-            panic(err)
+            shared.ThrowError(err.Error())
         }
         if routineID == p.activeGoroutineID {
             activeStack = &stacks
@@ -390,7 +389,7 @@ func (p *proxy) syncGoroutines() {
     defer p.activeTargetsMux.Unlock()
     routines, err := p.client.ListGoroutines()
     if err != nil {
-        panic(err)
+        shared.ThrowError(err.Error())
     }
     foundTargets := map[goroutineID]struct{}{}
     for _, routine := range routines {
@@ -488,12 +487,12 @@ func (p *proxy) evaluateOnGoroutineAndRespond(command debuggerAgent.EvaluateOnCa
             goroutineID = targetID
         } else {
             command.RespondWithError(shared.ErrorCodeInternalError, "Could not convert targetID to int")
-            panic(err)
+            shared.ThrowError(err.Error())
         }
     }
     frameId, err := strconv.Atoi(string(command.CallFrameId));
     if err != nil {
-        panic(err)
+        shared.ThrowError(err.Error())
     }
     variable, err := p.client.EvalVariable(dbgClient.EvalScope{
         GoroutineID: goroutineID,
@@ -525,9 +524,7 @@ func (p *proxy) evaluateOnGoroutineAndRespond(command debuggerAgent.EvaluateOnCa
 func getFileAndRespond(command debuggerAgent.GetScriptSourceCommand) {
     data, err := ioutil.ReadFile(string(command.ScriptId))
     if err != nil {
-        //fmt.Println(err)
-        panic(err)
-        return
+        shared.ThrowError(err.Error())
     }
     command.Respond(&debuggerAgent.GetScriptSourceReturn{
         ScriptSource: string(data),

@@ -55,8 +55,8 @@ func (p *proxy) enableAndRespond(command runtimeAgent.EnableCommand) {
     p.agent.SetGetPropertiesHandler(p.getPropertiesAndRespond)
     p.agent.SetCompileScriptHandler(p.compileScriptAndRespond)
 
-    go p.handleStdout()
-    go p.handleStderr()
+    go shared.WrapFunctionForPanicRecover(p.handleStdout, p.conn)()
+    go shared.WrapFunctionForPanicRecover(p.handleStderr, p.conn)()
 }
 
 func (p *proxy) compileScriptAndRespond(command runtimeAgent.CompileScriptCommand) {
@@ -71,21 +71,21 @@ func (p *proxy) getPropertiesAndRespond(command runtimeAgent.GetPropertiesComman
         if command.DestinationTargetID == "" {
             state, err := p.client.GetState()
             if err != nil {
-                panic(err)
+                shared.ThrowError(err.Error())
             }
             if state.SelectedGoroutine == nil {
-                panic("No active goroutine")
+                shared.ThrowError("No active goroutine")
             }
             goroutineID = int(state.SelectedGoroutine.ID)
         } else {
             goroutineID, err = strconv.Atoi(command.DestinationTargetID)
             if err != nil {
-                panic(err)
+                shared.ThrowError(err.Error())
             }
         }
         frameId, err := strconv.Atoi(objectId[len("local:"):])
         if err != nil {
-            panic(err)
+            shared.ThrowError(err.Error())
         }
         variables, err := p.client.ListLocalVariables(dbgClient.EvalScope{
             GoroutineID: goroutineID,
@@ -98,7 +98,7 @@ func (p *proxy) getPropertiesAndRespond(command runtimeAgent.GetPropertiesComman
             MaxStructFields: 1,
         })
         if err != nil {
-            panic(err)
+            shared.ThrowError(err.Error())
         }
         properties := []runtimeAgent.PropertyDescriptor{}
         for _, variable := range variables {
@@ -128,7 +128,7 @@ func (p *proxy) getAndSyncCloseState() bool {
 func (p *proxy) handleStdout() {
     stdout, err := p.client.GetStdout()
     if err != nil {
-        panic(err)
+        shared.ThrowError(err.Error())
     }
     reader := bufio.NewReader(stdout)
     for {
@@ -146,7 +146,7 @@ func (p *proxy) handleStdout() {
                 return
             }
             if err != nil {
-                panic(err)
+                shared.ThrowError(err.Error())
             }
         }
 
@@ -168,7 +168,7 @@ func (p *proxy) handleStdout() {
 func (p *proxy) handleStderr() {
     stderr, err := p.client.GetStderr()
     if err != nil {
-        panic(err)
+        shared.ThrowError(err.Error())
     }
     reader := bufio.NewReader(stderr)
     for {
@@ -186,7 +186,7 @@ func (p *proxy) handleStderr() {
                 return
             }
             if err != nil {
-                panic(err)
+                shared.ThrowError(err.Error())
             }
         }
         fmt.Println("Stderr: ", string(totalData))

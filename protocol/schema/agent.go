@@ -43,26 +43,7 @@ func (agent *SchemaAgent) Name() string {
 }
 
 func (agent *SchemaAgent) ProcessCommand(id int64, targetId string, funcName string, data *json.RawMessage) {
-    defer func() {
-        data := recover()
-        switch data.(type) {
-        case nil:
-            return
-        case shared.Warning:
-            fmt.Println(data)
-        case shared.Error:
-            fmt.Println("Closing websocket because of following Error:")
-            fmt.Println(data)
-            agent.conn.Close()
-        case error:
-            fmt.Println("Closing websocket because of following Error:")
-            fmt.Println(data)
-            agent.conn.Close()
-        default:
-            fmt.Println("Should probably use shared.Warning or shared.Error instead to panic()")
-            panic(data)
-        }
-    }()
+    defer shared.TryRecoverFromPanic(agent.conn)
     switch (funcName) {
         case "getDomains":
             var out GetDomainsCommand
