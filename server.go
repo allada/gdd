@@ -2,7 +2,6 @@ package main
 
 import (
     "os"
-    "strconv"
     "net/http"
     "./protocol/shared"
     "./proxies/debugger"
@@ -35,14 +34,8 @@ func main() {
     file := "./helloworld.go"
     args := os.Args[1:]
     if len(os.Args) > 1 {
-        if len(os.Args) > 2 {
-            file = os.Args[2]
-        }
-        if _, err := strconv.Atoi(os.Args[1]); err != nil {
-            panic("Expected first argument to be a valid port number if it exists")
-        }
-        port = os.Args[1]
-        args = os.Args[2:]
+        file = os.Args[1]
+        args = os.Args[1:]
     }
     h := handler{
         File: file,

@@ -135,17 +135,28 @@ func (p *proxy) handleStdout() {
         if p.getAndSyncCloseState() {
             return
         }
-        data, _, err := reader.ReadLine()
-        if err != nil {
-            
+        totalData := []byte{}
+        for notDone := true; notDone; {
+            var data []byte
+            var err error
+            data, notDone, err = reader.ReadLine()
+            totalData = append(totalData, data...)
+            if len(totalData) > 5e+6 { // 5 megabytes
+                fmt.Println("stdout too big!")
+                return
+            }
+            if err != nil {
+                panic(err)
+            }
         }
-        fmt.Println("Stdout: ", string(data))
+
+        fmt.Println("Stdout: ", string(totalData))
         p.agent.FireConsoleAPICalled(runtimeAgent.ConsoleAPICalledEvent{
             Type: runtimeAgent.ConsoleAPICalledTypeLog,
             Args: []runtimeAgent.RemoteObject{
                 {
                     Type: runtimeAgent.RemoteObjectTypeString,
-                    Value: string(data),
+                    Value: string(totalData),
                 },
             },
             Timestamp: 10000000,
@@ -164,20 +175,27 @@ func (p *proxy) handleStderr() {
         if p.getAndSyncCloseState() {
             return
         }
-        data, notDone, err := reader.ReadLine()
-        if !notDone {
-            fmt.Println("stdout too big!")
-            return
+        totalData := []byte{}
+        for notDone := true; notDone; {
+            var data []byte
+            var err error
+            data, notDone, err = reader.ReadLine()
+            totalData = append(totalData, data...)
+            if len(totalData) > 5e+6 { // 5 megabytes
+                fmt.Println("stderr too big!")
+                return
+            }
+            if err != nil {
+                panic(err)
+            }
         }
-        if err != nil {
-            panic(err)
-        }
+        fmt.Println("Stderr: ", string(totalData))
         p.agent.FireConsoleAPICalled(runtimeAgent.ConsoleAPICalledEvent{
             Type: runtimeAgent.ConsoleAPICalledTypeLog,
             Args: []runtimeAgent.RemoteObject{
                 {
                     Type: runtimeAgent.RemoteObjectTypeString,
-                    Value: string(data),
+                    Value: string(totalData),
                 },
             },
             ExecutionContextId: 0,
