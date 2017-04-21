@@ -8,7 +8,7 @@ import (
     "unsafe"
     "sync"
     "sync/atomic"
-    "github.com/derekparker/delve/service/rpc2"
+    "github.com/allada/delve/service/rpc2"
 )
 
 const API_PORT_LISTENING_STRING string = "API server listening at: 127.0.0.1:%d\n"
@@ -35,6 +35,7 @@ type Client struct{
 func (c *Client) Start() {
     defer func() {
         if r := recover(); r != nil {
+            fmt.Println(r);
             c.Kill()
         }
         c.isReadyLock.Unlock()
@@ -77,6 +78,7 @@ func (c *Client) Start() {
     if err = c.cmd.Start(); err != nil {
         panic(err)
     }
+    fmt.Println(c.stdout)
 
     var port int
     fmt.Fscanf(c.stdout, API_PORT_LISTENING_STRING, &port)

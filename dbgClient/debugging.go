@@ -2,7 +2,7 @@ package dbgClient
 
 import (
     "unsafe"
-    "github.com/derekparker/delve/service/api"
+    "github.com/allada/delve/service/api"
 )
 
 func (c *Client) ListGoroutines() ([]*Goroutine, error) {
