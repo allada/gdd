@@ -2,7 +2,7 @@ package dbgClient
 
 import (
     "unsafe"
-    "github.com/allada/delve/service/api"
+    "github.com/derekparker/delve/service/api"
 )
 
 // PC: Program counter

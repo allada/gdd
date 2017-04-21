@@ -1,7 +1,7 @@
 package dbgClient
 
 import (
-    "github.com/allada/delve/service/api"
+    "github.com/derekparker/delve/service/api"
 )
 
 type EvalScope api.EvalScope
