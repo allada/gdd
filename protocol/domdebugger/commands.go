@@ -2,9 +2,9 @@ package domdebugger
 
 
 import (
-    "../shared"
-    "../dom"
-    "../runtime"
+    "github.com/allada/gdd/protocol/shared"
+    "github.com/allada/gdd/protocol/dom"
+    "github.com/allada/gdd/protocol/runtime"
 )
 
 type SetDOMBreakpointCommand struct {

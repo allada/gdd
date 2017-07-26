@@ -2,8 +2,8 @@ package css
 
 
 import (
-    "../dom"
-    "../page"
+    "github.com/allada/gdd/protocol/dom"
+    "github.com/allada/gdd/protocol/page"
 )
 const (
     StyleSheetOriginInjected StyleSheetOrigin = "injected"

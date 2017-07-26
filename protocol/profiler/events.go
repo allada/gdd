@@ -2,7 +2,7 @@ package profiler
 
 
 import (
-    "../debugger"
+    "github.com/allada/gdd/protocol/debugger"
 )
 
 type ConsoleProfileStartedEvent struct {

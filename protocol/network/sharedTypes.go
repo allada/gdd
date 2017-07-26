@@ -2,8 +2,8 @@ package network
 
 
 import (
-    "../security"
-    "../runtime"
+    "github.com/allada/gdd/protocol/security"
+    "github.com/allada/gdd/protocol/runtime"
 )
 const (
     ConnectionTypeNone ConnectionType = "none"

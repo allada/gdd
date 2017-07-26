@@ -2,8 +2,8 @@ package debugger
 
 
 import (
-    "../shared"
-    "../runtime"
+    "github.com/allada/gdd/protocol/shared"
+    "github.com/allada/gdd/protocol/runtime"
 )
 
 type EnableCommand struct {

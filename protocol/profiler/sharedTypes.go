@@ -2,7 +2,7 @@ package profiler
 
 
 import (
-    "../runtime"
+    "github.com/allada/gdd/protocol/runtime"
 )
 type ProfileNode struct {
     Id int64 `json:"id"`// Unique id of the node.

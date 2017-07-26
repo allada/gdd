@@ -2,9 +2,9 @@ package css
 
 
 import (
-    "../shared"
-    "../dom"
-    "../page"
+    "github.com/allada/gdd/protocol/shared"
+    "github.com/allada/gdd/protocol/dom"
+    "github.com/allada/gdd/protocol/page"
 )
 
 type EnableCommand struct {

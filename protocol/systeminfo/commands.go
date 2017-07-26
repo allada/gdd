@@ -2,7 +2,7 @@ package systeminfo
 
 
 import (
-    "../shared"
+    "github.com/allada/gdd/protocol/shared"
 )
 
 type GetInfoCommand struct {

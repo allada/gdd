@@ -2,8 +2,8 @@ package domdebugger
 
 
 import (
-    "../runtime"
-    "../dom"
+    "github.com/allada/gdd/protocol/runtime"
+    "github.com/allada/gdd/protocol/dom"
 )
 const (
     DOMBreakpointTypeSubtreeDashmodified DOMBreakpointType = "subtree-modified"

@@ -2,7 +2,7 @@ package tethering
 
 
 import (
-    "../shared"
+    "github.com/allada/gdd/protocol/shared"
 )
 
 type BindCommand struct {

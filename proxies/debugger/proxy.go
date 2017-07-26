@@ -8,11 +8,11 @@ import (
     "sync/atomic"
     "strings"
     "crypto/sha1"
-    "../../dbgClient"
-    "../../protocol/shared"
-    debuggerAgent "../../protocol/debugger"
-    runtimeAgent "../../protocol/runtime"
-    targetAgent "../../protocol/target"
+    "github.com/allada/gdd/dbgClient"
+    "github.com/allada/gdd/protocol/shared"
+    debuggerAgent "github.com/allada/gdd/protocol/debugger"
+    runtimeAgent "github.com/allada/gdd/protocol/runtime"
+    targetAgent "github.com/allada/gdd/protocol/target"
 )
 
 type goroutineID int
@@ -302,7 +302,6 @@ func (p *proxy) sendResumeState() {
 }
 
 func (p *proxy) sendPauseState() {
-    fmt.Println("HERE")
     state, err := p.client.GetState()
     if err != nil {
         shared.ThrowError(err.Error())

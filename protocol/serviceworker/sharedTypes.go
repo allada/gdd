@@ -2,7 +2,7 @@ package serviceworker
 
 
 import (
-    "../target"
+    "github.com/allada/gdd/protocol/target"
 )
 const (
     ServiceWorkerVersionRunningStatusStopped ServiceWorkerVersionRunningStatus = "stopped"

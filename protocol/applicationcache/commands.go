@@ -2,8 +2,8 @@ package applicationcache
 
 
 import (
-    "../shared"
-    "../page"
+    "github.com/allada/gdd/protocol/shared"
+    "github.com/allada/gdd/protocol/page"
 )
 
 type GetFramesWithManifestsCommand struct {

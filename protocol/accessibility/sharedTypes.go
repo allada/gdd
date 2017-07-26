@@ -2,7 +2,7 @@ package accessibility
 
 
 import (
-    "../dom"
+    "github.com/allada/gdd/protocol/dom"
 )
 const (
     AXValueTypeBoolean AXValueType = "boolean"

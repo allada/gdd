@@ -1,9 +1,9 @@
 package page
 
 import (
-    "../../dbgClient"
-    "../../protocol/shared"
-    pageAgent "../../protocol/page"
+    "github.com/allada/gdd/dbgClient"
+    "github.com/allada/gdd/protocol/shared"
+    pageAgent "github.com/allada/gdd/protocol/page"
 )
 
 type proxy struct {

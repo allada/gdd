@@ -2,8 +2,8 @@ package emulation
 
 
 import (
-    "../shared"
-    "../dom"
+    "github.com/allada/gdd/protocol/shared"
+    "github.com/allada/gdd/protocol/dom"
 )
 
 type SetDeviceMetricsOverrideCommand struct {

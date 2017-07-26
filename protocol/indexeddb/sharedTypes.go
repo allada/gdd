@@ -2,7 +2,7 @@ package indexeddb
 
 
 import (
-    "../runtime"
+    "github.com/allada/gdd/protocol/runtime"
 )
 type KeyTypeEnum string
 const (

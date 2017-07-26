@@ -2,7 +2,7 @@ package profiler
 
 
 import (
-    "../shared"
+    "github.com/allada/gdd/protocol/shared"
 )
 
 type EnableCommand struct {

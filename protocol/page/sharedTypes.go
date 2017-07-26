@@ -2,7 +2,7 @@ package page
 
 
 import (
-    "../runtime"
+    "github.com/allada/gdd/protocol/runtime"
 )
 const (
     DialogTypeAlert DialogType = "alert"

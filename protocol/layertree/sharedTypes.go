@@ -2,7 +2,7 @@ package layertree
 
 
 import (
-    "../dom"
+    "github.com/allada/gdd/protocol/dom"
 )
 type ScrollRectTypeEnum string
 const (

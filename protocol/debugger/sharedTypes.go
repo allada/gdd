@@ -2,7 +2,7 @@ package debugger
 
 
 import (
-    "../runtime"
+    "github.com/allada/gdd/protocol/runtime"
 )
 type PausedReasonEnum string
 const (

@@ -2,7 +2,7 @@ package tracing
 
 
 import (
-    "../io"
+    "github.com/allada/gdd/protocol/io"
 )
 
 type DataCollectedEvent struct {

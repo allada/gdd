@@ -15,6 +15,15 @@ js_protocol.domains.forEach(data => domains.set(data.domain, data));
 var out = [];
 var enums = new Map();
 
+function writeFileSyncIfDiff(file, data) {
+    // Maybe hash if memory becomes an issue.
+    if (fs.existsSync(file) && fs.readFileSync(file, {encoding: "utf8"}) === data) {
+        return;
+    }
+    console.log("Writing file: " + file);
+    fs.writeFileSync(file, data);
+}
+
 for (var domain of domains.values()) {
     var events = [];
     var types = [];
@@ -141,37 +150,37 @@ for (var domain of domains.values()) {
     if (typesImports.size) {
         sharedTypesHeaders.push('import (');
         for (var v of typesImports.values()) {
-            sharedTypesHeaders.push(`    "../${v}"`);
+            sharedTypesHeaders.push(`    "github.com/allada/gdd/protocol/${v}"`);
         }
         sharedTypesHeaders.push(')');
         sharedTypesHeaders.push('');
     }
-    fs.writeFileSync('./protocol/' + domainName.toLowerCase() + '/sharedTypes.go', [sharedTypesHeaders.join('\n'), enumData ? enumData.join('\n') : '', types.join('\n')].join(''));
+    writeFileSyncIfDiff('./protocol/' + domainName.toLowerCase() + '/sharedTypes.go', [sharedTypesHeaders.join('\n'), enumData ? enumData.join('\n') : '', types.join('\n')].join(''));
 
     var eventHeaders = [packageData.join('\n')];
     if (eventsImports.size) {
         eventHeaders.push('import (');
         for (var v of eventsImports.values()) {
-            eventHeaders.push(`    "../${v}"`);
+            eventHeaders.push(`    "github.com/allada/gdd/protocol/${v}"`);
         }
         eventHeaders.push(')');
         eventHeaders.push('');
     }
-    fs.writeFileSync('./protocol/' + domainName.toLowerCase() + '/events.go', [eventHeaders.join('\n'), events.join('\n')].join('\n'));
+    writeFileSyncIfDiff('./protocol/' + domainName.toLowerCase() + '/events.go', [eventHeaders.join('\n'), events.join('\n')].join('\n'));
 
     var commandHeaders = [packageData.join('\n')];
     if (commandsImports.size || commandsNeedsShared) {
         commandHeaders.push('import (');
         if (commandsNeedsShared) {
-            commandHeaders.push(`    "../shared"`);
+            commandHeaders.push(`    "github.com/allada/gdd/protocol/shared"`);
         }
         for (var v of commandsImports.values()) {
-            commandHeaders.push(`    "../${v}"`);
+            commandHeaders.push(`    "github.com/allada/gdd/protocol/${v}"`);
         }
         commandHeaders.push(')');
         commandHeaders.push('');
     }
-    fs.writeFileSync('./protocol/' + domainName.toLowerCase() + '/commands.go', [commandHeaders.join('\n'), commands.join('\n')].join('\n'));
+    writeFileSyncIfDiff('./protocol/' + domainName.toLowerCase() + '/commands.go', [commandHeaders.join('\n'), commands.join('\n')].join('\n'));
 
     var commandSlices = [];
     var switchData = [];
@@ -279,24 +288,24 @@ ${switchData.join('\n')}
 }`,
 '')
     // var headerData = ['import ('];
-    // headerData.push(`    "../shared"`)
+    // headerData.push(`    "github.com/allada/gdd/protocol/shared"`)
     // if ('dependencies' in domain) {
     //     for (var dependency of domain.dependencies) {
-    //         headerData.push(`    "../${dependency.toLowerCase()}"`)
+    //         headerData.push(`    "github.com/allada/gdd/protocol/${dependency.toLowerCase()}"`)
     //     }
     // }
     // headerData.push(')');
     // headerData.push('');
-    var sharedTypesHeaders = [packageData.join('\n'), 'import (', '    "../shared"', '    "sync"', '    "encoding/json"', '    "fmt"', ')'];
+    var sharedTypesHeaders = [packageData.join('\n'), 'import (', '    "github.com/allada/gdd/protocol/shared"', '    "sync"', '    "encoding/json"', '    "fmt"', ')'];
     // if ('events' in domain && domain.events.length) {
     //     sharedTypesHeaders.push(headerData.join('\n'));
     // }
-    fs.writeFileSync('./protocol/' + domainName.toLowerCase() + '/agent.go', [sharedTypesHeaders.join('\n'), commandFnDefinitions.join('\n'), helperData.join('\n')].join('\n'));
+    writeFileSyncIfDiff('./protocol/' + domainName.toLowerCase() + '/agent.go', [sharedTypesHeaders.join('\n'), commandFnDefinitions.join('\n'), helperData.join('\n')].join('\n'));
 }
 try {
     fs.mkdirSync('./protocol/shared/');
 } catch(e) {}
-fs.writeFileSync('./protocol/shared/types.go',
+writeFileSyncIfDiff('./protocol/shared/types.go',
 `package shared
 
 import (
@@ -307,6 +316,7 @@ import (
     "encoding/json"
     "sync/atomic"
     "fmt"
+    "runtime/debug"
 )
 
 func init() {
@@ -503,6 +513,7 @@ func TryRecoverFromPanic(conn *Connection) {
     case error:
         fmt.Println("Closing websocket because of following Error:")
         fmt.Println(data)
+        debug.PrintStack()
         conn.Close()
     default:
         fmt.Println("Should probably use shared.Warning or shared.Error instead to panic()")

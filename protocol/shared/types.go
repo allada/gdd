@@ -8,6 +8,7 @@ import (
     "encoding/json"
     "sync/atomic"
     "fmt"
+    "runtime/debug"
 )
 
 func init() {
@@ -204,6 +205,7 @@ func TryRecoverFromPanic(conn *Connection) {
     case error:
         fmt.Println("Closing websocket because of following Error:")
         fmt.Println(data)
+        debug.PrintStack()
         conn.Close()
     default:
         fmt.Println("Should probably use shared.Warning or shared.Error instead to panic()")

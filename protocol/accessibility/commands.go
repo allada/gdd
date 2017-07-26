@@ -2,8 +2,8 @@ package accessibility
 
 
 import (
-    "../shared"
-    "../dom"
+    "github.com/allada/gdd/protocol/shared"
+    "github.com/allada/gdd/protocol/dom"
 )
 
 type GetPartialAXTreeCommand struct {

@@ -2,8 +2,8 @@ package network
 
 
 import (
-    "../page"
-    "../runtime"
+    "github.com/allada/gdd/protocol/page"
+    "github.com/allada/gdd/protocol/runtime"
 )
 
 type ResourceChangedPriorityEvent struct {

@@ -2,7 +2,7 @@ package applicationcache
 
 
 import (
-    "../page"
+    "github.com/allada/gdd/protocol/page"
 )
 type ApplicationCacheResource struct {
     Url string `json:"url"`// Resource url.

@@ -2,7 +2,7 @@ package schema
 
 
 import (
-    "../shared"
+    "github.com/allada/gdd/protocol/shared"
 )
 
 type GetDomainsCommand struct {

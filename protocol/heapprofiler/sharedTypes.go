@@ -2,7 +2,7 @@ package heapprofiler
 
 
 import (
-    "../runtime"
+    "github.com/allada/gdd/protocol/runtime"
 )
 type HeapSnapshotObjectId string
 

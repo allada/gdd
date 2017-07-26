@@ -4,7 +4,7 @@ import (
     "io"
     "os/exec"
     "fmt"
-    "../config"
+    "github.com/allada/gdd/config"
     "unsafe"
     "sync"
     "sync/atomic"
@@ -32,7 +32,7 @@ type Client struct{
     stdin io.WriteCloser
 }
 
-func (c *Client) Start() {
+func (c *Client) Start(config config.Config) {
     defer func() {
         if r := recover(); r != nil {
             c.Kill()
@@ -56,7 +56,7 @@ func (c *Client) Start() {
     if c.Killed() {
         return
     }
-    c.cmd = exec.Command(config.DVL_PATH, args...)
+    c.cmd = exec.Command(config.DlvPath, args...)
 
     var err error
     c.stdout, err = c.cmd.StdoutPipe()
@@ -81,7 +81,7 @@ func (c *Client) Start() {
     var port int
     fmt.Fscanf(c.stdout, API_PORT_LISTENING_STRING, &port)
     if port == 0 {
-        panic("Did not get good output from dvl or 0 for port number.")
+        panic("Did not get good output from dlv or 0 for port number.")
     }
 
     c.rpcClient = rpc2.NewClient("localhost:" + fmt.Sprintf("%d", port))

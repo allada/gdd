@@ -2,10 +2,10 @@ package page
 
 
 import (
-    "../shared"
-    "../debugger"
-    "../emulation"
-    "../dom"
+    "github.com/allada/gdd/protocol/shared"
+    "github.com/allada/gdd/protocol/debugger"
+    "github.com/allada/gdd/protocol/emulation"
+    "github.com/allada/gdd/protocol/dom"
 )
 
 type EnableCommand struct {

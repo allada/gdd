@@ -2,7 +2,7 @@ package target
 
 
 import (
-    "../shared"
+    "github.com/allada/gdd/protocol/shared"
 )
 
 type SetDiscoverTargetsCommand struct {

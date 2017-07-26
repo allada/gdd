@@ -7,9 +7,9 @@ import (
     "strings"
     "reflect"
     "sync/atomic"
-    "../../dbgClient"
-    "../../protocol/shared"
-    runtimeAgent "../../protocol/runtime"
+    "github.com/allada/gdd/dbgClient"
+    "github.com/allada/gdd/protocol/shared"
+    runtimeAgent "github.com/allada/gdd/protocol/runtime"
 )
 
 type proxy struct {

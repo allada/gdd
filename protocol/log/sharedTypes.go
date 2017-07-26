@@ -2,8 +2,8 @@ package log
 
 
 import (
-    "../runtime"
-    "../network"
+    "github.com/allada/gdd/protocol/runtime"
+    "github.com/allada/gdd/protocol/network"
 )
 type LogEntrySourceEnum string
 const (
